@@ -14,14 +14,12 @@ class MasterMatchmaker:
 
     def _load_enzymes(self):
         enzymes = []
-        if not os.path.exists(self.enzyme_fasta):
+        if not self.enzyme_fasta or not os.path.exists(self.enzyme_fasta):
             print(f"[!] Warning: Enzyme file '{self.enzyme_fasta}' not found.")
             print("    -> Using 'Mock Enzymes' for simulation.")
-            # Generating 3 mock enzymes to show the loop functionality
             return [
                 {'id': 'Cas13d_Yellowstone_V1', 'pfs_rule': 'NOT_G'},
-                {'id': 'Cas13d_DeepSea_V4', 'pfs_rule': 'NOT_G'},
-                {'id': 'Cas13d_SaltLake_V9', 'pfs_rule': 'NOT_G'}
+                {'id': 'Cas13d_DeepSea_V4', 'pfs_rule': 'NOT_G'}
             ]
             
         try:
@@ -33,37 +31,23 @@ class MasterMatchmaker:
 
         if not enzymes:
             return [{'id': 'Cas13d_Mock_V1', 'pfs_rule': 'NOT_G'}]
-            
         return enzymes
 
     def _load_disease_map(self):
-        """
-        Loads the Matrix CSV (Rows=Cancer, Cols=Fusion) to map Fusions -> Diseases.
-        """
+        """Loads Matrix CSV to map Fusions -> Diseases (Only needed for raw files)."""
         if not self.disease_matrix_file or not os.path.exists(self.disease_matrix_file):
-            print("[!] Warning: Disease matrix file not found. Diseases will be 'Unknown'.")
             return
 
         print(f"[*] Loading Disease Map from {self.disease_matrix_file}...")
         try:
-            # Load matrix
             df = pd.read_csv(self.disease_matrix_file)
-            
-            # Assuming format: First column is Cancer Type, subsequent cols are Fusions
-            # We want to iterate columns (Fusions) and find which rows (Cancers) have a count > 0
-            
-            # Set the first column (Cancer) as index
+            # Set index to Cancer Type (first col)
             df.set_index(df.columns[0], inplace=True)
             
-            # Iterate through fusions (columns)
             for fusion in df.columns:
-                # Find cancers where this fusion has a non-zero count
                 associated_cancers = df.index[df[fusion] > 0].tolist()
                 if associated_cancers:
                     self.disease_map[fusion] = ", ".join(associated_cancers)
-                    
-            print(f"   [+] Mapped diseases for {len(self.disease_map)} fusions.")
-            
         except Exception as e:
             print(f"[!] Error loading disease map: {e}")
 
@@ -77,57 +61,59 @@ class MasterMatchmaker:
         try:
             df = pd.read_csv(self.target_file)
             
+            # 1. Handle "fusionsss" typo from ChimerDB raw files
             if 'fusionsss' in df.columns:
                 df.rename(columns={'fusionsss': 'Fusion_Name'}, inplace=True)
-            
-            # Deduplicate! Your file has multiple rows for the same fusion.
-            # We keep the first occurrence which usually has the count.
-            initial_len = len(df)
-            df = df.drop_duplicates(subset=['Fusion_Name'])
-            print(f"   [+] Loaded {len(df)} unique targets (deduplicated from {initial_len}).")
-            
-            return df
+                
+            # 2. Normalize "Total_Patients" vs "count"
+            if 'Total_Patients' in df.columns:
+                df.rename(columns={'Total_Patients': 'count'}, inplace=True)
+
+            print(f"   [+] Loaded {len(df)} targets.")
+            return df.drop_duplicates(subset=['Fusion_Name'])
             
         except Exception as e:
             print(f"[!] Error reading file: {e}")
             return pd.DataFrame()
 
     def _get_target_sequence(self, fusion_name):
-        # SIMULATION: Generating random RNA Junction (60nt)
-        # Real pipeline: Call NCBI Entrez API here.
+        # SIMULATION: 60nt Junction
         bases = ['A', 'C', 'T', 'G']
         return "".join(random.choice(bases) for _ in range(60))
 
     def run_matching(self):
-        # 1. Load Data
         enzymes = self._load_enzymes()
         targets_df = self._load_targets()
-        self._load_disease_map()
+        
+        # Only load map if we need it
+        if 'Primary_Disease' not in targets_df.columns:
+            self._load_disease_map()
 
         if targets_df.empty or not enzymes:
             print("[!] Aborting: Missing Data.")
             return
 
         print(f"[*] Screening {len(enzymes)} Enzymes against top 50 Targets...")
-        
-        # Select top 50 unique targets
         subset = targets_df.head(50)
 
         for index, row in subset.iterrows():
             target_name = row['Fusion_Name']
-            patient_count = row.get('count', 'N/A')
+            patient_count = row.get('count', 0)
             
-            # Lookup Disease
-            disease = self.disease_map.get(target_name, "Unknown")
+            # SMART DISEASE LOOKUP: 
+            # 1. Check if Specificity Filter already found the disease
+            # 2. Else, check the loaded map
+            # 3. Else, Unknown
+            if 'Primary_Disease' in row:
+                disease = row['Primary_Disease']
+            else:
+                disease = self.disease_map.get(target_name, "Unknown")
             
-            # Get Sequence (Simulation of Junction)
             rna_seq = self._get_target_sequence(target_name)
             
-            # Test EVERY Enzyme
             for enzyme in enzymes:
                 score, cut_sites = self._calculate_cut_efficiency(enzyme, rna_seq)
                 
-                # We save it if it has at least one valid cut site
                 if score > 0:
                     self.results.append({
                         'Target_Fusion': target_name,
@@ -135,7 +121,7 @@ class MasterMatchmaker:
                         'Patient_Count': patient_count,
                         'Enzyme_Variant': enzyme['id'],
                         'Valid_Cut_Sites': score,
-                        'Junction_Sequence_Sim': rna_seq[:15] + "..." # Preview
+                        'Junction_Sequence_Sim': rna_seq[:15] + "..."
                     })
 
     def _calculate_cut_efficiency(self, enzyme, rna_seq):
@@ -143,10 +129,9 @@ class MasterMatchmaker:
         spacer_len = 22
         for i in range(len(rna_seq) - spacer_len):
             spacer = rna_seq[i : i+spacer_len]
-            pfs_index = i + spacer_len
-            if pfs_index < len(rna_seq):
-                if rna_seq[pfs_index] != 'G':
-                    valid_spacers.append(spacer)
+            # PFS Rule: No G at 3' end
+            if rna_seq[i+spacer_len] != 'G':
+                valid_spacers.append(spacer)
         return len(valid_spacers), valid_spacers
 
     def save_leads(self, filename="lead_candidates.csv"):
@@ -155,29 +140,46 @@ class MasterMatchmaker:
             return
         
         df = pd.DataFrame(self.results)
-        
-        # Sort by Disease, then Score
         df = df.sort_values(by=['Associated_Disease', 'Valid_Cut_Sites'], ascending=[True, False])
-        
         df.to_csv(filename, index=False)
         print(f"\n[SUCCESS] Generated '{filename}' with {len(df)} candidates.")
-        print("--- TOP MATCHES PREVIEW ---")
-        print(df[['Target_Fusion', 'Associated_Disease', 'Enzyme_Variant', 'Valid_Cut_Sites']].head(10))
+        print(df[['Target_Fusion', 'Associated_Disease', 'Enzyme_Variant', 'Valid_Cut_Sites']].head())
+
+def _find_latest_enzyme_file(directory="data/raw_sequences"):
+    """Find the most recent enzyme FASTA file"""
+    if not os.path.exists(directory):
+        return None
+    
+    fasta_files = [f for f in os.listdir(directory) if f.startswith("search_") and f.endswith(".fasta")]
+    if not fasta_files:
+        return None
+    
+    # Sort by filename (timestamp-based) to get latest
+    fasta_files.sort(reverse=True)
+    return os.path.join(directory, fasta_files[0])
 
 if __name__ == "__main__":
     # --- CONFIGURATION ---
+    # Automatically find the latest enzyme file
+    ENZYME_FILE = _find_latest_enzyme_file()
+    if not ENZYME_FILE:
+        print("[!] Warning: No enzyme FASTA files found. Using mock enzymes.")
+        ENZYME_FILE = None
     
-    # 1. Enzyme File
-    ENZYME_FILE = "data/raw_sequences/search_20260128_103022.fasta"
+    # CASE 1: Run on Specificity Filtered Data (Recommended)
+    # Check if filtered targets exist, otherwise use raw fusion files
+    if os.path.exists("data/high_specificity_targets.csv"):
+        TARGET_FILE = "data/high_specificity_targets.csv"
+        DISEASE_FILE = None  # Not needed, specificity filter provides disease
+        print("[*] Using specificity-filtered targets")
+    else:
+        # CASE 2: Run on Raw Validation Data
+        TARGET_FILE = "data/known_fusions.csv"
+        DISEASE_FILE = "data/KB_and_Pub_Recur_per_cancer.csv"
+        if not os.path.exists(DISEASE_FILE):
+            DISEASE_FILE = "data/disease_matrix_known.csv"
+        print("[*] Using raw fusion files")
     
-    # 2. Target File (The List)
-    TARGET_FILE = "data/known_fusions.csv"
-    
-    # 3. Disease Map File (The Matrix)
-    # RENAME 'Recurrent_table.xlsx - KB_and_Pub_Recur_per_cancer.csv' to this:
-    DISEASE_FILE = "data/disease_matrix_known.csv"
-    
-    print(f"--- Collateral Bio: Matchmaker v2.1 ---")
     matcher = MasterMatchmaker(ENZYME_FILE, TARGET_FILE, DISEASE_FILE)
     matcher.run_matching()
     matcher.save_leads()
