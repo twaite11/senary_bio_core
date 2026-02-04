@@ -1,4 +1,4 @@
-# Collateral Bio
+# Senary Bio
 
 > **Computational Discovery Platform for Cas13d Therapeutics**
 
@@ -20,9 +20,15 @@
 
 ## 🎯 Mission
 
-**Collateral Bio** is pioneering the development of precision cancer therapeutics through novel Cas13d enzyme discovery. Our mission is to identify and validate high-collateral Cas13d variants capable of targeting cancer-specific fusion RNAs, creating a "suicide switch" mechanism that induces apoptosis specifically in tumor cells while preserving healthy tissue.
+**Senary Bio** is pioneering the development of precision cancer therapeutics through novel Cas13d enzyme discovery. Our mission is to identify and validate high-collateral Cas13d variants capable of targeting cancer-specific fusion RNAs, creating a "suicide switch" mechanism that induces apoptosis specifically in tumor cells while preserving healthy tissue.
 
 We combine computational biology, machine learning, and high-throughput screening to accelerate the discovery of next-generation RNA-guided therapeutics.
+
+---
+
+## 🗺️ Full Filtering Map
+
+See **[FILTERING_MAP.md](FILTERING_MAP.md)** for a complete map from NCBI scraping → enzyme filters → target filters → matchmaker → expert agent → final Type VI Cas13d candidates.
 
 ---
 

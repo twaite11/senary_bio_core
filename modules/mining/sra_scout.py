@@ -16,9 +16,9 @@ class SRAScout:
         # Relaxed from R.{4}H to R.{4,6}H to catch novel diversity
         self.hepn_regex = re.compile(r"R.{4,6}H")
         
-        # 2. Size Constraints (Cas13d is typically 900-1000aa)
-        self.min_size = 800
-        self.max_size = 1100
+        # 2. Size Constraints (Cas13d family: 600-1400 aa to capture diversity)
+        self.min_size = 600
+        self.max_size = 1400
 
     def _normalize_query(self, query):
         """Strip NCBI filter suffixes from query so caller controls filters."""
@@ -177,12 +177,12 @@ class SRAScout:
             return False
         
         # Check distance between HEPN domains (Cas13d topology)
-        # Usually separated by >100 AA
+        # Separated by 100-1200 aa to capture diverse Type VI variants
         valid_topology = False
         for i in range(len(matches)):
             for j in range(i+1, len(matches)):
                 distance = matches[j] - matches[i]
-                if 100 < distance < 600:
+                if 100 < distance < 1200:
                     valid_topology = True
                     break
         

@@ -3,7 +3,7 @@ Cas13/Type VI HEPN Post-Filter.
 
 Filters prospector hits (deep_hits_*.fasta) using canonical genomics methods:
 - Pfam HEPN (PF05168) HMM: require >= 2 domain hits (E-value <= 1e-5)
-- Optional motif check: R.{4,6}H with 100-600 aa spacing
+- Optional motif check: R.{4,6}H with 100-1200 aa spacing
 """
 import argparse
 import glob
@@ -23,14 +23,14 @@ HEPN_PFAM_ID = "PF05168"
 
 
 def _has_hepn_motif_topology(seq_str: str) -> bool:
-    """Check for two R.{4,6}H motifs with 100-600 aa spacing (Cas13 topology)."""
+    """Check for two R.{4,6}H motifs with 100-1200 aa spacing (Cas13 topology)."""
     matches = [m.start() for m in HEPN_REGEX.finditer(seq_str)]
     if len(matches) < 2:
         return False
     for i in range(len(matches)):
         for j in range(i + 1, len(matches)):
             dist = matches[j] - matches[i]
-            if 100 < dist < 600:
+            if 100 < dist < 1200:
                 return True
     return False
 

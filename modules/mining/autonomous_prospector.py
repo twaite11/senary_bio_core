@@ -22,7 +22,64 @@ except ImportError:
 # --- CONFIGURATION ---
 DB_PATH = "data/prospector.db"
 LOG_FILE = "prospector.log"
-Entrez.email = "founder@senarybio.com" 
+Entrez.email = "founder@senarybio.com"
+
+# Broad, diverse SRA search queries to maximize coverage and minimize overlap.
+# Covers extreme environments, marine, terrestrial, gut, plant, industrial, symbionts.
+BROAD_SEARCH_QUERIES = [
+    "acid mine drainage metagenome",
+    "soda lake metagenome",
+    "serpentinizing spring metagenome",
+    "geothermal hot spring metagenome",
+    "Antarctic soil metagenome",
+    "Arctic permafrost metagenome",
+    "deep sea sediment metagenome",
+    "hydrothermal vent metagenome",
+    "cold seep metagenome",
+    "mangrove sediment metagenome",
+    "coral reef microbiome metagenome",
+    "ocean gyre metagenome",
+    "permafrost metagenome",
+    "desert soil metagenome",
+    "volcanic soil metagenome",
+    "cave microbiome metagenome",
+    "compost metagenome",
+    "rumen metagenome",
+    "termite gut metagenome",
+    "insect gut metagenome",
+    "fish gut microbiome metagenome",
+    "rhizosphere metagenome",
+    "phyllosphere metagenome",
+    "plant endophyte metagenome",
+    "wastewater treatment metagenome",
+    "anaerobic digestor metagenome",
+    "oil reservoir metagenome",
+    "mine tailings metagenome",
+    "hypersaline lake metagenome",
+    "salt marsh sediment metagenome",
+    "freshwater sediment metagenome",
+    "sponge symbiont metagenome",
+    "coral symbiont metagenome",
+    "lichen microbiome metagenome",
+    "biofilm metagenome",
+    "activated sludge metagenome",
+    "salt flat halophile metagenome",
+    "brine pool metagenome",
+    "sulfuric spring metagenome",
+    "alkaline lake metagenome",
+    "glacier ice metagenome",
+    "deep subsurface metagenome",
+    "peat bog metagenome",
+    "rice paddy soil metagenome",
+    "marine sponge metagenome",
+    "hydrothermal plume metagenome",
+    "wood decay metagenome",
+    "soda ash lake metagenome",
+    "saline spring metagenome",
+    "iron mine metagenome",
+    "salt cave metagenome",
+    "thermal spring sediment metagenome",
+] 
 
 # Setup Logging
 logging.basicConfig(
@@ -81,8 +138,25 @@ class AutonomousProspector:
                      (id INTEGER PRIMARY KEY, query TEXT, hits INTEGER, strategy TEXT, timestamp DATETIME)''')
         c.execute('''CREATE TABLE IF NOT EXISTS visited_ids 
                      (nucleotide_id TEXT PRIMARY KEY, timestamp DATETIME)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS query_cycle 
+                     (id INTEGER PRIMARY KEY CHECK (id=1), idx INTEGER)''')
+        c.execute('INSERT OR IGNORE INTO query_cycle (id, idx) VALUES (1, 0)')
         conn.commit()
         conn.close()
+
+    def get_next_broad_query(self):
+        """Cycle through BROAD_SEARCH_QUERIES to maximize diversity and minimize overlap."""
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT idx FROM query_cycle WHERE id=1")
+        row = c.fetchone()
+        idx = (row[0] if row else 0) % len(BROAD_SEARCH_QUERIES)
+        query = BROAD_SEARCH_QUERIES[idx]
+        c.execute("UPDATE query_cycle SET idx = ? WHERE id=1", ((idx + 1) % len(BROAD_SEARCH_QUERIES),))
+        conn.commit()
+        conn.close()
+        strategy = f"Broad[{idx + 1}/{len(BROAD_SEARCH_QUERIES)}]: {query[:40]}..."
+        return query, strategy
 
     def get_visited_ids(self):
         """Return set of nucleotide IDs already mined to avoid re-processing."""
@@ -181,54 +255,54 @@ class AutonomousProspector:
 
         return selected_ids[:deep_mine_max]
 
-    def formulate_strategy(self):
-        """The 'Ralph' Loop: Adapts strategy based on success/failure"""
+    def formulate_strategy(self, use_broad_list=False):
+        """
+        The 'Ralph' Loop: Adapts strategy based on success/failure.
+        When use_broad_list=True (e.g. all IDs visited or high failure streak),
+        cycles through BROAD_SEARCH_QUERIES to maximize diversity and minimize overlap.
+        """
+        if use_broad_list:
+            return self.get_next_broad_query()
+
         history = self.get_recent_history()
-        
+
         system = "You are the Autonomous Director of Discovery. Plan the next NCBI mining operation."
         prompt = f"""
         GOAL: Discover novel Cas13d enzymes in NCBI Whole Genome Shotgun (WGS) data.
-        
+
         STATUS:
         - Failure Streak: {self.failure_streak}
         - Recent History:
         {history}
-        
+
         TASK:
         Generate the next specific NCBI Query.
-        1. If Failure Streak > 2: PIVOT to a new environment type.
+        1. If Failure Streak > 2: PIVOT to a COMPLETELY DIFFERENT environment (not similar to recent).
         2. If succeeding: REFINE the current query.
-        3. DIVERSITY IS KEY. Do not stick to just hot springs.
-        
-        ENVIRONMENT IDEAS:
-        - Hypersaline (Salt lakes, brines)
-        - Digestive (Termite gut, Rumen)
-        - Marine (Deep sea vents, Sediment)
-        - Soil (Permafrost, Desert varnish)
-        - Symbionts (Sponge symbiont, Coral microbiome)
-        
+        3. DIVERSITY IS CRITICAL. Pick environments NOT in recent history.
+        4. Avoid repeating: hypersaline, salt flat, sponge symbiont if already tried recently.
+
+        DIVERSE ENVIRONMENT IDEAS (pick one not recently used):
+        - Acid mine, soda lake, serpentinizing spring, geothermal
+        - Antarctic/Arctic, permafrost, glacier, deep subsurface
+        - Cold seep, mangrove, coral reef, ocean gyre
+        - Termite gut, fish gut, rhizosphere, phyllosphere
+        - Wastewater, oil reservoir, mine tailings, activated sludge
+        - Lichen, peat bog, rice paddy, wood decay, hydrothermal plume
+
         OUTPUT FORMAT:
         JSON with keys: "strategy_name", "query".
         Return ONLY environmental keywords for "query" - no filters like wgs[Prop].
-        Example: {{ "strategy_name": "Pivot to Hypersaline", "query": "hypersaline microbial mat metagenome" }}
+        Example: {{ "strategy_name": "Pivot to Acid Mine", "query": "acid mine drainage metagenome" }}
         """
-        
+
         try:
             response = self.llm.generate(system, prompt)
             clean_json = response[response.find('{'):response.rfind('}')+1]
             data = json.loads(clean_json)
             return data.get('query'), data.get('strategy_name')
-        except:
-            # BROADENED FALLBACK LIST (keywords only, no filters)
-            fallbacks = [
-                ("hydrothermal vent metagenome", "Fallback: Thermal"),
-                ("hypersaline metagenome", "Fallback: Saline"),
-                ("permafrost metagenome", "Fallback: Cryo"),
-                ("rumen metagenome", "Fallback: Gut"),
-                ("deep sea sediment metagenome", "Fallback: Marine")
-            ]
-            query, strategy = random.choice(fallbacks)
-            return query, strategy
+        except Exception:
+            return self.get_next_broad_query()
 
     def deep_mine(self, id_list):
         require_crispr = os.getenv("REQUIRE_CRISPR", "1").lower() in ("1", "true", "yes")
@@ -260,7 +334,7 @@ class AutonomousProspector:
                     for frame in frames:
                         orfs = str(frame).split("*")
                         for orf in orfs:
-                            if 800 < len(orf) < 1100:
+                            if 600 <= len(orf) <= 1400:
                                 score = self.deep_engine.score_candidate(orf)
                                 orfs_scored += 1
                                 if score > best_score:
@@ -284,21 +358,26 @@ class AutonomousProspector:
         deep_mine_max = int(os.getenv("DEEP_MINE_MAX", "15"))
         logging.info(f"--- Senary Bio: Deep Prospector (Model: {self.llm.model_name}) ---")
         logging.info(f"Config: DEEP_MINE_MAX={deep_mine_max}, ESM_THRESHOLD={esm_threshold}, REQUIRE_CRISPR={require_crispr}")
+        logging.info(f"ORF size: 600-1400 aa | Broad queries: {len(BROAD_SEARCH_QUERIES)} | SRA_MAX_RECORDS={os.getenv('SRA_MAX_RECORDS', '100')}")
 
         while True:
-            query, strategy = self.formulate_strategy()
+            visited = self.get_visited_ids()
+            broad_threshold = int(os.getenv("BROAD_LIST_THRESHOLD", "500"))
+            # Use broad diverse list when: failure streak, or already visited many IDs (reduces overlap)
+            use_broad = self.failure_streak >= 1 or len(visited) >= broad_threshold
+            query, strategy = self.formulate_strategy(use_broad_list=use_broad)
             logging.info(f"PLAN: {strategy} | Query: {query}")
-            
-            raw_ids = self.scout.search_wgs(query, max_records=50)
+
+            max_records = int(os.getenv("SRA_MAX_RECORDS", "100"))
+            raw_ids = self.scout.search_wgs(query, max_records=max_records)
 
             # Exclude already-visited IDs to avoid endless re-processing
-            visited = self.get_visited_ids()
             ids = [uid for uid in raw_ids if uid not in visited]
             if visited:
                 logging.info(f"Skipping {len(visited)} previously visited IDs. {len(ids)} new candidates.")
 
             if not ids:
-                logging.warning("All IDs already visited or none found. Pivoting next iteration.")
+                logging.warning("All IDs already visited or none found. Using broad list next iteration.")
                 self.failure_streak += 1
                 time.sleep(5)
                 continue
