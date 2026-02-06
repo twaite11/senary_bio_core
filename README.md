@@ -232,21 +232,34 @@ python modules/mining/autonomous_prospector.py
 python modules/mining/debug_sra.py
 ```
 
-### Step 2: Specificity Filter (optional)
+### Step 2: Family Grouping (mined sequences)
+
+Group mined sequences from `data/mined_sequences/` into families by homology (ESM-2) and HEPN count. Naming: `SN01_001`, `SN01_002`, etc. Output: `data/fam_fasta.fasta` (used by matchmaker).
+
+```bash
+# Requires: torch, transformers, scipy
+python modules/mining/family_grouper.py
+```
+
+Options: `--input-dir`, `--output-dir`, `--threshold 0.7`, `--prefix SN`, `--glob "*.fasta"`
+
+Env: `FAMILY_DEVICE=cuda` (or `cpu`) to force device; `EMBED_BATCH_SIZE=50` for memory tuning; AMD GPU requires PyTorch ROCm build (Linux).
+
+### Step 3: Specificity Filter (optional)
 
 ```bash
 python modules/targeting/specificity_filter.py
 # Uses disease_matrix_novel.csv → data/high_specificity_targets.csv
 ```
 
-### Step 3: Matchmaker
+### Step 4: Matchmaker
 
 ```bash
 python modules/matchmaker.py
 # Uses high_specificity_targets.csv if present, else known_fusions.csv
 ```
 
-### Step 4: Expert Agent
+### Step 5: Expert Agent
 
 ```bash
 # .env: GEMINI_API_KEY
@@ -254,7 +267,7 @@ python modules/analysis/expert_agent.py
 # → lead_candidates_filtered.csv
 ```
 
-### Step 5: ARCHS4 Query Test
+### Step 6: ARCHS4 Query Test
 
 ```bash
 python run_targeting.py
@@ -273,6 +286,7 @@ collateral_bio_core/
 ├── main.py
 ├── data/
 │   ├── raw_sequences/         # Mined FASTA
+│   ├── mined_sequences/       # Novel hits (deep_hits_*.fasta) → family_grouped_*.fasta
 │   ├── expression_data/       # human_matrix.h5
 │   ├── high_specificity_targets.csv
 │   ├── known_fusions.csv, novel_fusions.csv
@@ -283,6 +297,7 @@ collateral_bio_core/
 │   │   ├── ncbi_miner.py
 │   │   ├── sra_scout.py
 │   │   ├── autonomous_prospector.py
+│   │   ├── family_grouper.py   # Groups mined seqs by homology (SN01_001, etc.)
 │   │   ├── deep_miner_utils.py
 │   │   ├── hepn_filter.py
 │   │   └── debug_sra.py

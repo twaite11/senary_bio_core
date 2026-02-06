@@ -109,6 +109,14 @@ Wireframe map with filtering actions and criteria at each step.
 ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │ FILTERED CAS13D ENZYMES → data/raw_sequences/*.fasta                                                    │
 └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+            │
+            │  [Optional: Family Grouping]
+            ▼
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ FAMILY GROUPING (mined_sequences)                                                                       │
+│ Partition by HEPN count → cluster by ESM-2 homology → name SN01_001, SN01_002, ...                      │
+│ Output: family_grouped_*.fasta, family_manifest_*.csv                                                   │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---

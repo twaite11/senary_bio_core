@@ -132,12 +132,14 @@ On macOS/Linux use `export TARGET_FUSIONS_CSV=novel_fusions.csv` instead of `set
 
 ## 7. Outputs
 
-| Step         | Output                        | Description                                        |
-|-------------|-------------------------------|----------------------------------------------------|
-| Mine        | `data/raw_sequences/search_*.fasta` | Cas13d sequences from NCBI                         |
-| Matchmaker  | `lead_candidates.csv`         | Enzyme–fusion pairs (ranked)                       |
-| Expert Agent| `lead_candidates_filtered.csv`| Cancer-only, absent-in-normal filtered leads       |
-| Expert Agent| `dashboard.html`              | Dashboard of filtered candidates (open in browser) |
+| Step            | Output                                 | Description                                        |
+|-----------------|----------------------------------------|----------------------------------------------------|
+| Mine            | `data/raw_sequences/search_*.fasta`    | Cas13d sequences from NCBI                         |
+| Family Grouping | `data/mined_sequences/family_grouped_*.fasta` | Sequences grouped by homology (SN01_001, etc.)   |
+| Family Grouping | `data/mined_sequences/family_manifest_*.csv`  | Mapping: new_id, original_id, hepn_count          |
+| Matchmaker      | `lead_candidates.csv`                  | Enzyme–fusion pairs (ranked)                       |
+| Expert Agent    | `lead_candidates_filtered.csv`         | Cancer-only, absent-in-normal filtered leads       |
+| Expert Agent    | `dashboard.html`                       | Dashboard of filtered candidates (open in browser) |
 
 ---
 
@@ -186,7 +188,32 @@ Requires `pyhmmer` (or system HMMER). The filter uses Pfam PF05168 (HEPN) and re
 
 ---
 
-## 11. Troubleshooting
+## 12. Family Grouping (mined sequences)
+
+After collecting mined sequences in `data/mined_sequences/` (e.g. `deep_hits_*.fasta`), group them into families by homology (ESM-2) and HEPN count. Output uses naming convention `SN01_001`, `SN01_002`, etc.
+
+**Prerequisites:** `torch`, `transformers` (for ESM-2), `scipy` (for clustering).
+
+```bash
+python modules/mining/family_grouper.py
+```
+
+Options:
+- `--input-dir data/mined_sequences` – directory with FASTA files (default: `data/mined_sequences`)
+- `--output-dir` – output directory (default: same as input)
+- `--threshold 0.7` – cosine similarity threshold for same family (default 0.7)
+- `--prefix SN` – family ID prefix
+- `--glob "*.fasta"` – glob pattern for input files
+
+Env vars: `FAMILY_SIMILARITY_THRESHOLD`, `FAMILY_PREFIX`, `FAMILY_INPUT_DIR`
+
+Outputs:
+- `data/mined_sequences/family_grouped_YYYYMMDD.fasta` – sequences renamed (e.g. `>SN01_001`)
+- `data/mined_sequences/family_manifest_YYYYMMDD.csv` – mapping: new_id, original_id, hepn_count, family_id, member_index
+
+---
+
+## 13. Troubleshooting
 
 - **"No module named 'Bio'"** → `pip install biopython` (or `pip install -r requirements.txt`).
 - **"ARCHS4 required"** → Add `data/expression_data/human_matrix.h5` (see step 4).

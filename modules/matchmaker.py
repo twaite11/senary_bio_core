@@ -158,13 +158,26 @@ def _find_latest_enzyme_file(directory="data/raw_sequences"):
     fasta_files.sort(reverse=True)
     return os.path.join(directory, fasta_files[0])
 
+
+def _find_enzyme_file():
+    """Prefer fam_fasta (family-grouped), then search_*.fasta, else None."""
+    # 1. Family-grouped enzymes (from family_grouper)
+    fam_path = "data/fam_fasta.fasta"
+    if os.path.exists(fam_path):
+        return fam_path
+    # 2. Raw mined sequences
+    return _find_latest_enzyme_file()
+
+
 if __name__ == "__main__":
     # --- CONFIGURATION ---
-    # Automatically find the latest enzyme file
-    ENZYME_FILE = _find_latest_enzyme_file()
+    # Prefer fam_fasta.fasta (family-grouped), else latest search_*.fasta
+    ENZYME_FILE = _find_enzyme_file()
     if not ENZYME_FILE:
-        print("[!] Warning: No enzyme FASTA files found. Using mock enzymes.")
+        print("[!] Warning: No fam_fasta.fasta or search_*.fasta found. Using mock enzymes.")
         ENZYME_FILE = None
+    else:
+        print(f"[*] Using enzyme file: {ENZYME_FILE}")
     
     # CASE 1: Run on Specificity Filtered Data (Recommended)
     # Check if filtered targets exist, otherwise use raw fusion files
