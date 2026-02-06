@@ -9,3 +9,5 @@ transformers>=4.30.0
 jupyterlab
 google-generativeai>=0.8.0
 python-dotenv>=1.0.0
+omegafold
+tmtools>=0.3.0

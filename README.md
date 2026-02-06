@@ -273,6 +273,30 @@ python modules/analysis/expert_agent.py
 python run_targeting.py
 ```
 
+### Structure Pipeline (OmegaFold)
+
+For 2-3 HEPN filtered enzymes: structure prediction, TM-score homology vs Cas13a/b, and 3D dashboard.
+
+```bash
+# 1. Filter to 2-3 HEPN sequences
+python visualization/filter_23_hepn.py
+
+# 2. Run OmegaFold (PyTorch; works on RunPod, local GPU)
+python visualization/run_omegafold.py
+
+# 3. Compute TM-score vs Cas13 references
+python visualization/run_tmscore.py
+
+# 4. Generate dashboard
+python visualization/structure_dashboard.py
+
+# 5. Serve and view
+python -m http.server 8000
+# Open: http://localhost:8000/visualization/structure_dashboard.html
+```
+
+Requires: `omegafold`, `tmtools` (or US-align), `biopython`. OmegaFold outputs to `data/structure_pipeline/structures/omegafold/`.
+
 ---
 
 ## 📂 Project Structure

@@ -1,6 +1,6 @@
 """
 Generate Structure Dashboard HTML: 3D viewer + domain coloring + homology table.
-Reads: input FASTA, InterPro domains.json, homology_scores.json, ColabFold PDB paths.
+Reads: input FASTA, InterPro domains.json, homology_scores.json, OmegaFold PDB paths.
 Serve the HTML via HTTP (e.g. python -m http.server) to load PDBs.
 """
 import argparse
@@ -22,18 +22,22 @@ def parse_family_id(seq_id: str) -> str:
     return parts[0] if parts else seq_id
 
 
-def find_pdb_paths(structures_dir: Path) -> dict:
-    """Scan ColabFold output for {seq_id: relative_path}."""
+def find_pdb_paths(structures_dir: Path, proj: Path) -> dict:
+    """Scan OmegaFold (flat *.pdb) or ColabFold (subdirs) output for {seq_id: relative_path}."""
     result = {}
-    for sub in structures_dir.iterdir():
-        if not sub.is_dir():
-            continue
-        for pdb in sub.glob("*_rank_001*.pdb"):
-            name = pdb.stem.replace("_unrelaxed", "").replace("_relaxed", "").split("_rank")[0]
-            rel = pdb.relative_to(structures_dir.parent.parent.parent)  # from project root
-            result[name] = str(Path("data") / rel).replace("\\", "/")
+    # OmegaFold: flat *.pdb in output dir
     for pdb in structures_dir.glob("*.pdb"):
-        result[pdb.stem] = "data/structure_pipeline/structures/colabfold/" + pdb.name
+        rel = (structures_dir / pdb.name).relative_to(proj)
+        result[pdb.stem] = str(rel).replace("\\", "/")
+    # ColabFold fallback: subdirs with *_rank_001*.pdb
+    if not result:
+        for sub in structures_dir.iterdir():
+            if not sub.is_dir():
+                continue
+            for pdb in sub.glob("*_rank_001*.pdb"):
+                name = pdb.stem.replace("_unrelaxed", "").replace("_relaxed", "").split("_rank")[0]
+                rel = pdb.relative_to(proj)
+                result[name] = str(rel).replace("\\", "/")
     return result
 
 
@@ -58,8 +62,8 @@ def main():
     )
     parser.add_argument(
         "--structures-dir",
-        default="data/structure_pipeline/structures/colabfold",
-        help="ColabFold output directory",
+        default="data/structure_pipeline/structures/omegafold",
+        help="OmegaFold output directory",
     )
     parser.add_argument(
         "--output",
@@ -102,7 +106,7 @@ def main():
             homology = json.load(f)
 
     # PDB paths (relative for fetch from project root)
-    pdb_paths = find_pdb_paths(struct_dir) if struct_dir.exists() else {}
+    pdb_paths = find_pdb_paths(struct_dir, proj) if struct_dir.exists() else {}
 
     # Build rows for table
     all_ids = sorted(set(seqs.keys()) | set(domains.keys()) | set(homology.keys()) | set(pdb_paths.keys()))

@@ -76,8 +76,8 @@ def main():
     )
     parser.add_argument(
         "--structures-dir",
-        default="data/structure_pipeline/structures/colabfold",
-        help="Directory with predicted PDB files (scan subdirs for *_rank_001*.pdb)",
+        default="data/structure_pipeline/structures/omegafold",
+        help="Directory with predicted PDB files (OmegaFold: flat *.pdb)",
     )
     parser.add_argument(
         "--references-dir",
@@ -111,23 +111,22 @@ def main():
             print(f"[!] Reference not found: {p}")
             return
 
-    # Collect predicted PDBs (ColabFold structure)
+    # Collect predicted PDBs (OmegaFold: flat *.pdb in output dir)
     struct_dir = Path(args.structures_dir)
     query_pdbs = {}
-    for sub in struct_dir.iterdir():
-        if not sub.is_dir():
-            continue
-        for pdb in sub.glob("*_rank_001*.pdb"):
-            # Extract seq_id from path (e.g. SN01_001_...)
-            name = pdb.stem.replace("_unrelaxed", "").replace("_relaxed", "").split("_rank")[0]
-            query_pdbs[name] = str(pdb.resolve())
+    for pdb in struct_dir.glob("*.pdb"):
+        query_pdbs[pdb.stem] = str(pdb.resolve())
+    # ColabFold fallback: subdirs with *_rank_001*.pdb
     if not query_pdbs:
-        # Fallback: treat structures_dir as flat PDB dir
-        for pdb in struct_dir.glob("*.pdb"):
-            query_pdbs[pdb.stem] = str(pdb.resolve())
+        for sub in struct_dir.iterdir():
+            if not sub.is_dir():
+                continue
+            for pdb in sub.glob("*_rank_001*.pdb"):
+                name = pdb.stem.replace("_unrelaxed", "").replace("_relaxed", "").split("_rank")[0]
+                query_pdbs[name] = str(pdb.resolve())
 
     if not query_pdbs:
-        print("[!] No predicted PDB files found. Run ColabFold first.")
+        print("[!] No predicted PDB files found. Run OmegaFold first.")
         scores = {}
     else:
         print(f"[*] Computing TM-scores for {len(query_pdbs)} structures...")
