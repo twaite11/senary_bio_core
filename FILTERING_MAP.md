@@ -10,7 +10,8 @@ Wireframe map with filtering actions and criteria at each step.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────────────────┐
-│  NCBI (Raw Data)  →  Enzyme Filters  →  Target Filters  →  Matchmaker  →  Expert Agent  →  FINAL │
+│  NCBI (Raw Data)  →  Mining Filters  →  Pipeline (Design+Structure+Identity)  →  Target Filters  │
+│       →  Matchmaker  →  Expert Agent  →  FINAL                                                │
 └─────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -38,8 +39,10 @@ Wireframe map with filtering actions and criteria at each step.
                 │                                     │                                     │
                 ▼                                     ▼                                     ▼
 ┌───────────────────────────────┐     ┌───────────────────────────────┐     ┌───────────────────────────────┐
-│ search_YYYYMMDD.fasta         │     │ undiscovered_cas13d_*.fasta   │     │ deep_hits_*.fasta             │
+│ search_*.fasta                │     │ undiscovered_cas13d_*.fasta   │     │ deep_hits_*.fasta             │
 │ (annotated proteins)          │     │ (unannotated WGS hits)        │     │ (AI-validated deep hits)      │
+│                               │     │ + full_orf_checks             │     │ + full_orf_checks + optional  │
+│                               │     │                               │     │ CRISPR + ESM-2 similarity     │
 └───────────────┬───────────────┘     └───────────────┬───────────────┘     └───────────────┬───────────────┘
                 │                                     │                                     │
                 └─────────────────────────────────────┼─────────────────────────────────────┘
@@ -53,70 +56,70 @@ Wireframe map with filtering actions and criteria at each step.
                                                         ▼
 ```
 
+**Mining-time filters** (applied during collection; sra_scout & autonomous_prospector only for WGS paths):
+- Size 600–1400 aa
+- HEPN 2–3 motifs (R.{4,6}H)
+- full_orf_checks: N-term M, C-term tail ≥15 aa after last HEPN, contig-boundary margin
+- Prospector only (when REQUIRE_FULL_STRUCTURE): CRISPR array with ≥MIN_REPEAT_COUNT repeats; ESM-2 similarity (DeepEngine vs RfxCas13d/PspCas13a when ESM_REFERENCE_FASTA set)
+
 ---
 
-## Phase 2: Enzyme-Side Filtering (Type VI Cas13d Criteria)
+## Phase 2: Enzyme Pipeline (run_full_pipeline.py)
+
+The full pipeline takes raw FASTA (e.g. `deep_hits_*.fasta`, `family_grouped_*.fasta`) and runs: **Embed → Mutate for drift → Structure filter → Identity filter**. Matchmaker consumes the final output.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│                           ENZYME FILTER PIPELINE                                                          │
+│                           ENZYME PIPELINE (run_full_pipeline.py)                                         │
 └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 
-   RAW SEQUENCES (FASTA)
+   RAW SEQUENCES (data/raw_sequences/deep_hits_*.fasta or family_grouped_*.fasta)
             │
             ▼
 ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ FILTER 1: SIZE (600–1400 aa)                                                                             │
-│ Keep: Proteins between 600–1400 amino acids.                                                             │
-│ Throw out: Too short (fragments) or too long (wrong enzyme family).                                      │
-│ Why: Cas13d family diversity; broader range captures novel variants.                                     │
+│ STEP 1: EMBED (optional; --skip-design skips)                                                            │
+│ Action: ESM-2 embeddings for all sequences.                                                             │
+│ Output: data/design/embeddings/                                                                         │
 └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
             │
             ▼
 ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ FILTER 2: HEPN MOTIF (R...H pattern)                                                                     │
-│ Keep: 2–3 HEPN motifs (Arginine–4to6 aa–Histidine). Motifs must be 100–1200 aa apart.                    │
-│ Throw out: Proteins missing the double-domain structure or with 4+ HEPN domains.                         │
-│ Why: HEPN domains are the RNA-cutting "scissors"; Cas13d needs two or three, properly spaced.            │
-└─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-            │
-            ├───────────────────────────────────────────────────────────────────────┐
-            │  [Prospector path only – sra_scout/ncbi_miner skip to Filter 5]       │
-            ▼                                                                       │
-┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ FILTER 3: CRISPR ARRAY (Prospector only)                                                                 │
-│ Keep: Contigs with 2–3+ repeats (24–32 bp chunks).                                                        │
-│ Throw out: Proteins without CRISPR context.                                                               │
-│ Why: Cas13d usually sits next to CRISPR arrays in nature.                                                 │
+│ STEP 2: MUTATE FOR DRIFT (optional; --skip-design skips)                                                 │
+│ Keep: Variants scored for stability vs RfxCas13d/PspCas13a; keep <85% identity to known Cas13.           │
+│ Throw out: Unstable or too similar to reference.                                                        │
+│ Optional: Gemini trans-cleavage prompt for mutations that may increase activity.                        │
+│ Output: data/design/drift_variants.fasta                                                                │
 └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
             │
             ▼
 ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ FILTER 4: ESM-2 SIMILARITY (Prospector only)                                                             │
-│ Keep: Cosine similarity to known Cas13d ref > 0.75.                                                      │
-│ Throw out: Sequences that don't "look like" Cas13d.                                                       │
-│ Why: Deep learning detects subtle sequence patterns.                                                      │
+│ STEP 3: STRUCTURE FILTER (optional; --skip-structure skips)                                              │
+│ Keep: OmegaFold structure → TM-score vs Cas13 refs (5W1H, 6DTD, 6IV9) ≥ threshold (default 0.4);        │
+│       2–3 HEPN motifs (R.{4,6}H) in sequence.                                                           │
+│ Throw out: Low TM-score or wrong HEPN count.                                                            │
+│ Output: data/structure_pipeline/passed_structures.fasta                                                 │
 └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
             │
             ▼
 ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ FILTER 5: Structure filter (run_full_pipeline)                                                          │
-│ Keep: 2–3 HEPN motifs (R.{4,6}H) in sequence; TM-score vs Cas13 refs above threshold.                  │
-│ Throw out: Wrong HEPN count or low structural similarity.                                                 │
-│ Why: Bi-lobed/HEPN check in structure_filter (bi_lobed_hepn_check.py).                                    │
+│ STEP 4: IDENTITY FILTER (optional; --skip-identity skips)                                                │
+│ Keep: Sequences with max identity to known_cas13.fasta &lt; 85% (drift goal).                              │
+│ Throw out: Too similar to known Cas13 (Lwa, Rfx, etc.).                                                 │
+│ Output: data/identity_filtered/passed.fasta, identity_metadata.csv                                      │
 └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
             │
             ▼
 ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ FILTERED CAS13D ENZYMES → data/raw_sequences/*.fasta                                                    │
+│ FILTERED CAS13D ENZYMES → data/identity_filtered/passed.fasta                                           │
+│ (Input to Matchmaker)                                                                                   │
 └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
             │
-            │  [Optional: Family Grouping]
+            │  [Optional: Family Grouping on raw/mined sequences]
             ▼
 ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ FAMILY GROUPING (mined_sequences)                                                                       │
+│ FAMILY GROUPING (family_grouper.py – run separately)                                                    │
 │ Partition by HEPN count → cluster by ESM-2 homology → name SN01_001, SN01_002, ...                      │
-│ Output: family_grouped_*.fasta, family_manifest_*.csv                                                   │
+│ Output: data/mined_sequences/family_grouped_*.fasta, family_manifest_*.csv                              │
 └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -140,7 +143,7 @@ Wireframe map with filtering actions and criteria at each step.
 │ Keep: Fusions present in ≤3 cancer types (configurable).                                                │
 │ Throw out: Fusions in many cancer types (promiscuous / artifact).                                       │
 │ Why: Tissue-specific fusions are real drivers; pan-cancer = noise.                                      │
-│ Output: data/targets/high_specificity_targets.csv                                                                     │
+│ Output: data/targets/high_specificity_targets.csv                                                       │
 └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
             │
             ▼
@@ -162,7 +165,8 @@ Wireframe map with filtering actions and criteria at each step.
 
 ```
    FILTERED ENZYMES                         FILTERED TARGETS
-   (data/raw_sequences/*.fasta)             (high_specificity_targets.csv or known_fusions.csv)
+   (data/identity_filtered/passed.fasta)    (high_specificity_targets.csv or known_fusions.csv)
+   from run_full_pipeline --run-matchmaker  │
             │                                               │
             └───────────────────┬───────────────────────────┘
                                 │
@@ -239,15 +243,15 @@ Wireframe map with filtering actions and criteria at each step.
 ╚══════════════════════════════════════════════════════════════════════════════════════════════════════════╝
 
   ┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-  │    NCBI      │     │   ENZYME     │     │   TARGET     │     │  MATCHMAKER  │     │   EXPERT     │
+  │    NCBI      │     │   PIPELINE   │     │   TARGET     │     │  MATCHMAKER  │     │   EXPERT     │
   │   SCRAPE     │────▶│   FILTERS    │────▶│   FILTERS    │────▶│   FILTERS    │────▶│   FILTERS    │
   └──────────────┘     └──────────────┘     └──────────────┘     └──────────────┘     └──────────────┘
        │                      │                     │                     │                     │
        ▼                      ▼                     ▼                     ▼                     ▼
-  Search term          Size 600–1400         Specificity            PFS cut sites        ARCHS4 safety
-  match "Cas13d"       HEPN 2–3 motifs       ≤3 cancer types        Disease known       Absent normal
-  Env keywords         CRISPR array          Fusion→organ           Rank by score       Present cancer
-  BioProject elink     ESM-2 sim >0.75       mapping                                     Gemini GO/HOLD
+  Search term          Embed → Mutate          Specificity            PFS cut sites        ARCHS4 safety
+  Env keywords         Structure (OmegaFold   ≤3 cancer types        Disease known       Absent normal
+  BioProject elink     + TM-score)             Fusion→organ           Rank by score       Present cancer
+                       Identity (<85%)         mapping                                     Gemini GO/HOLD
 
   ═══════════════════════════════════════════════════════════════════════════════════════════════════════
   FINAL: lead_candidates_filtered.csv  │  Type VI Cas13d enzyme–fusion pairs (cancer-specific)
@@ -260,14 +264,17 @@ Wireframe map with filtering actions and criteria at each step.
 
 | Stage | Filter | Keep | Throw out |
 |-------|--------|------|-----------|
-| NCBI | Search | Matches query / env keywords | Rest of DB |
-| Enzyme | Size | 600–1400 aa | Too short/long |
-| Enzyme | HEPN | 2–3 motifs, 100–1200 aa apart | Missing or 4+ domains |
-| Enzyme | full_orf_checks / structure filter | ≥15 aa after last HEPN, 2–3 HEPN | C-terminal fragments, wrong HEPN count |
-| Enzyme | CRISPR | Contigs with repeats | No CRISPR context |
-| Enzyme | ESM-2 | Similarity > 0.75 | Doesn't look like Cas13d |
-| Target | Specificity | ≤3 cancer types | Promiscuous fusions |
-| Matchmaker | PFS | Valid cut sites | No cut sites |
-| Matchmaker | Disease | Known cancer | Unknown disease |
-| Expert | ARCHS4 | Low normal, high cancer | Unsafe profile |
-| Expert | Gemini | GO / HOLD | NO-GO |
+| **NCBI** | Search | Matches query / env keywords | Rest of DB |
+| **Mining** | Size | 600–1400 aa | Too short/long |
+| **Mining** | HEPN | 2–3 motifs (R.{4,6}H) | Missing or 4+ domains |
+| **Mining** | full_orf_checks | N-term M, C-term tail ≥15 aa, contig boundary | Fragments |
+| **Mining** | CRISPR (Prospector) | ≥1 repeat when REQUIRE_FULL_STRUCTURE | No CRISPR context |
+| **Mining** | ESM-2 (Prospector) | Similarity in range when ESM_REFERENCE_FASTA set | Outside range |
+| **Pipeline** | Mutate for drift | Stable vs Rfx/Psp, <85% identity | Unstable, too similar |
+| **Pipeline** | Structure | TM-score ≥0.4, 2–3 HEPN | Low TM-score, wrong HEPN |
+| **Pipeline** | Identity | Max identity <85% to known_cas13.fasta | Too similar to known Cas13 |
+| **Target** | Specificity | ≤3 cancer types | Promiscuous fusions |
+| **Matchmaker** | PFS | Valid cut sites | No cut sites |
+| **Matchmaker** | Disease | Known cancer | Unknown disease |
+| **Expert** | ARCHS4 | Low normal, high cancer | Unsafe profile |
+| **Expert** | Gemini | GO / HOLD | NO-GO |

@@ -40,10 +40,15 @@ class SRAScout:
                 q = q[:-len(suffix)].strip()
         return q
 
-    def _search_nucleotide(self, term, max_records):
-        """Internal: run esearch on nucleotide with given term."""
+    def _search_nucleotide(self, term, max_records, retstart=0):
+        """Internal: run esearch on nucleotide with given term. Supports pagination via retstart."""
         try:
-            handle = Entrez.esearch(db="nucleotide", term=term, retmax=max_records)
+            handle = Entrez.esearch(
+                db="nucleotide",
+                term=term,
+                retmax=max_records,
+                retstart=retstart,
+            )
             record = Entrez.read(handle)
             handle.close()
             return record.get("IdList", [])
@@ -96,10 +101,11 @@ class SRAScout:
                 unique.append(uid)
         return unique
 
-    def search_wgs(self, environment_query="hot spring metagenome", max_records=20):
+    def search_wgs(self, environment_query="hot spring metagenome", max_records=20, retstart=0):
         """
         Searches NCBI Nucleotide for unannotated metagenomic contigs.
         Normalizes query (strips wgs[Prop] etc.), tries WGS first, then broader search if no hits.
+        Supports pagination via retstart to fetch deeper result pages.
         """
         keywords = self._normalize_query(environment_query)
         if not keywords:
@@ -107,23 +113,41 @@ class SRAScout:
 
         # Try 1: environment terms + wgs[Prop] (only once)
         full_query = f'{keywords} AND wgs[Prop]'
-        print(f"[*] Scouting Nucleotide for: '{full_query}'...")
-        id_list = self._search_nucleotide(full_query, max_records)
+        if retstart > 0:
+            print(f"[*] Scouting Nucleotide for: '{full_query}'... (page at {retstart})")
+        else:
+            print(f"[*] Scouting Nucleotide for: '{full_query}'...")
+        id_list = self._search_nucleotide(full_query, max_records, retstart)
 
-        # Try 2: if no hits, retry without wgs[Prop] for broader matching
-        if len(id_list) < 5:
+        # Try 2: if no hits, retry without wgs[Prop] for broader matching (only when retstart=0)
+        if len(id_list) < 5 and retstart == 0:
             fallback_query = f'{keywords}'
             print(f"[*] Few hits with wgs[Prop]. Retrying broader: '{fallback_query}'...")
-            id_list = self._search_nucleotide(fallback_query, max_records)
+            id_list = self._search_nucleotide(fallback_query, max_records, 0)
 
-        # Try 3: fall back to BioProject -> elink -> nucleotide
-        if len(id_list) < 5:
+        # Try 3: fall back to BioProject -> elink -> nucleotide (only when retstart=0)
+        if len(id_list) < 5 and retstart == 0:
             bp_ids = self.search_bioproject(environment_query, max_projects=10)
             if bp_ids:
                 id_list = self.bioproject_to_nucleotide_ids(bp_ids, max_per_project=max_records // max(1, len(bp_ids)))
                 print(f"   [+] BioProject fallback: {len(id_list)} nucleotide IDs from {len(bp_ids)} projects.")
 
         print(f"   [+] Found {len(id_list)} metagenomic contigs/scaffolds.")
+        return id_list
+
+    def search_very_broad(self, query, max_records=200, retstart=0):
+        """
+        Search nucleotide with the given query **without** wgs[Prop] for a very
+        broad, different result set. Used when the prospector is stuck seeing
+        the same SRA files repeatedly. Supports pagination via retstart.
+        """
+        term = self._normalize_query(query) or "metagenome"
+        if retstart > 0:
+            print(f"[*] Very broad search (no wgs[Prop]): '{term}'... (page at {retstart})")
+        else:
+            print(f"[*] Very broad search (no wgs[Prop]): '{term}'...")
+        id_list = self._search_nucleotide(term, max_records, retstart)
+        print(f"   [+] Found {len(id_list)} nucleotide IDs (broad scope).")
         return id_list
 
     def fetch_and_mine(self, id_list):

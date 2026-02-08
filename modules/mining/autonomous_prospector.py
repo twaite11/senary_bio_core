@@ -81,7 +81,24 @@ BROAD_SEARCH_QUERIES = [
     "iron mine metagenome",
     "salt cave metagenome",
     "thermal spring sediment metagenome",
-] 
+]
+
+# Very broad, generic queries used when stuck seeing same SRA files 2–3 times in a row.
+# Searched without wgs[Prop] for a different slice of NCBI.
+SUPER_BROAD_QUERIES = [
+    "metagenome",
+    "environmental metagenome",
+    "shotgun metagenome",
+    "whole genome shotgun metagenome",
+    "uncultured microbiome",
+    "microbial metagenome",
+    "environmental DNA sequencing",
+    "metagenomic assembly",
+    "WGS metagenome",
+    "marine metagenome",
+    "soil metagenome",
+    "gut metagenome",
+]
 
 # Setup Logging
 logging.basicConfig(
@@ -131,6 +148,8 @@ class AutonomousProspector:
         
         self._setup_db()
         self.failure_streak = 0
+        self._last_raw_ids = set()
+        self._repeat_streak = 0
 
     def _setup_db(self):
         os.makedirs("data", exist_ok=True)
@@ -158,6 +177,12 @@ class AutonomousProspector:
         conn.commit()
         conn.close()
         strategy = f"Broad[{idx + 1}/{len(BROAD_SEARCH_QUERIES)}]: {query[:40]}..."
+        return query, strategy
+
+    def get_random_super_broad_query(self):
+        """Pick a random very-broad query to break out of repeated same-SRA loops."""
+        query = random.choice(SUPER_BROAD_QUERIES)
+        strategy = f"VeryBroad(random): {query[:40]}..."
         return query, strategy
 
     def get_visited_ids(self):
@@ -389,21 +414,63 @@ class AutonomousProspector:
         logging.info(f"Full enzyme: REQUIRE_START_M={os.getenv('REQUIRE_START_M','1')}, MIN_CTERM_TAIL={os.getenv('MIN_CTERM_TAIL','15')}, REQUIRE_FULL_STRUCTURE={require_full_structure}, MIN_REPEAT_COUNT={min_repeat_count}")
         logging.info(f"ORF size: 600-1400 aa | Broad queries: {len(BROAD_SEARCH_QUERIES)} | SRA_MAX_RECORDS={os.getenv('SRA_MAX_RECORDS', '100')}")
 
+        # Threshold: same/similar SRA set this many times in a row -> force very broad random search
+        repeat_streak_threshold = int(os.getenv("REPEAT_STREAK_THRESHOLD", "2"))
+        stale_overlap_ratio = float(os.getenv("STALE_OVERLAP_RATIO", "0.6"))
+        stale_new_ids_max = int(os.getenv("STALE_NEW_IDS_MAX", "5"))
+        pagination_max_pages = int(os.getenv("SRA_PAGINATION_MAX_PAGES", "10"))
+
         while True:
             visited = self.get_visited_ids()
             broad_threshold = int(os.getenv("BROAD_LIST_THRESHOLD", "500"))
+            # Stuck seeing same SRA 2–3 times in a row -> one shot of very broad random search (no wgs[Prop])
+            use_very_broad = self._repeat_streak >= repeat_streak_threshold
+            if use_very_broad:
+                self._repeat_streak = 0
+                logging.info("Repeat streak reached: forcing very broad random search to break loop.")
             # Use broad diverse list when: failure streak, or already visited many IDs (reduces overlap)
             use_broad = self.failure_streak >= 1 or len(visited) >= broad_threshold
-            query, strategy = self.formulate_strategy(use_broad_list=use_broad)
-            logging.info(f"PLAN: {strategy} | Query: {query}")
+            if use_very_broad:
+                query, strategy = self.get_random_super_broad_query()
+                logging.info(f"PLAN: {strategy} | Query: {query}")
+                max_records = min(200, int(os.getenv("SRA_MAX_RECORDS", "100")) * 2)
+            else:
+                query, strategy = self.formulate_strategy(use_broad_list=use_broad)
+                logging.info(f"PLAN: {strategy} | Query: {query}")
+                max_records = int(os.getenv("SRA_MAX_RECORDS", "100"))
 
-            max_records = int(os.getenv("SRA_MAX_RECORDS", "100"))
-            raw_ids = self.scout.search_wgs(query, max_records=max_records)
+            # Search with pagination: if first page yields only visited IDs, try deeper pages
+            raw_ids = []
+            ids = []
+            for page in range(pagination_max_pages):
+                retstart = page * max_records
+                if use_very_broad:
+                    raw_ids = self.scout.search_very_broad(query, max_records=max_records, retstart=retstart)
+                else:
+                    raw_ids = self.scout.search_wgs(query, max_records=max_records, retstart=retstart)
 
-            # Exclude already-visited IDs to avoid endless re-processing
-            ids = [uid for uid in raw_ids if uid not in visited]
-            if visited:
-                logging.info(f"Skipping {len(visited)} previously visited IDs. {len(ids)} new candidates.")
+                ids = [uid for uid in raw_ids if uid not in visited]
+                if visited:
+                    logging.info(f"Skipping {len(visited)} previously visited IDs. {len(ids)} new candidates (page {page + 1}).")
+
+                if ids:
+                    break
+                if len(raw_ids) < max_records:
+                    logging.info("Reached end of results (fewer than max_records). No more pages.")
+                    break
+                logging.info(f"Page {page + 1} all visited. Trying next page...")
+                time.sleep(2)
+
+            # Detect "same SRA over and over": high overlap with last iteration or very few new IDs
+            if raw_ids:
+                curr_set = set(raw_ids)
+                overlap = len(curr_set & self._last_raw_ids) / len(curr_set) if curr_set else 0
+                if overlap >= stale_overlap_ratio or len(ids) <= stale_new_ids_max:
+                    self._repeat_streak += 1
+                    logging.info(f"Stale iteration (overlap={overlap:.2f}, new={len(ids)}). Repeat streak={self._repeat_streak}.")
+                else:
+                    self._repeat_streak = 0
+                self._last_raw_ids = curr_set
 
             if not ids:
                 logging.warning("All IDs already visited or none found. Using broad list next iteration.")

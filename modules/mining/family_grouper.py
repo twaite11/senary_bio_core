@@ -1,8 +1,10 @@
 """
 Family Grouper: Groups mined Cas13d sequences into families by homology (ESM-2)
 and HEPN domain count. Outputs FASTA with naming convention SN01_001, SN01_002, etc.
+Preserves metadata (SRA accession, CRISPR repeats) for synthesis when --metadata-dir provided.
 """
 import argparse
+import csv
 import hashlib
 import os
 import re
@@ -34,6 +36,34 @@ def seq_dedup_key(record) -> str:
     return hashlib.md5(str(record.seq).encode()).hexdigest()
 
 
+def _load_metadata_lookup(metadata_dir: Path = None, metadata_csv: str = None) -> dict:
+    """
+    Load metadata from deep_hits_*_metadata.csv files.
+    Returns {sequence_id: {"sra_accession": str, "repeat_domains": str, "score": str}}.
+    """
+    lookup = {}
+    paths = []
+    if metadata_csv and Path(metadata_csv).exists():
+        paths.append(Path(metadata_csv))
+    if metadata_dir and metadata_dir.exists():
+        paths.extend(sorted(metadata_dir.glob("deep_hits_*_metadata.csv")))
+    for p in paths:
+        try:
+            with open(p, newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    sid = row.get("sequence_id", "").strip()
+                    if sid:
+                        lookup[sid] = {
+                            "sra_accession": row.get("sra_accession", "").strip(),
+                            "repeat_domains": row.get("repeat_domains", "").strip(),
+                            "score": row.get("score", "").strip(),
+                        }
+        except Exception as e:
+            print(f"[!] Warning: could not read metadata {p}: {e}")
+    return lookup
+
+
 class FamilyGrouper:
     def __init__(
         self,
@@ -42,6 +72,8 @@ class FamilyGrouper:
         similarity_threshold=0.7,
         prefix="SN",
         glob_pattern="*.fasta",
+        metadata_dir=None,
+        metadata_csv=None,
     ):
         self.input_dir = Path(input_dir)
         self.output_dir = Path(output_dir or input_dir)
@@ -50,6 +82,8 @@ class FamilyGrouper:
         )
         self.prefix = os.getenv("FAMILY_PREFIX", prefix)
         self.glob_pattern = glob_pattern
+        self.metadata_dir = Path(metadata_dir) if metadata_dir else None
+        self.metadata_csv = metadata_csv
         self.deep_engine = None
 
     def _load_sequences(self):
@@ -125,6 +159,13 @@ class FamilyGrouper:
             raise ValueError("No sequences loaded.")
         print(f"   [+] Loaded {len(records)} unique sequences.")
 
+        # Load metadata for synthesis (SRA accession, CRISPR repeats)
+        meta_lookup = _load_metadata_lookup(self.metadata_dir, self.metadata_csv)
+        if not self.metadata_dir and not self.metadata_csv:
+            meta_lookup = _load_metadata_lookup(self.input_dir)  # Try input dir
+        if meta_lookup:
+            print(f"   [+] Loaded metadata for {len(meta_lookup)} sequences (SRA, CRISPR repeats).")
+
         partitions = self._partition_by_hepn(records)
         for hepn_cnt, recs in partitions.items():
             print(f"   [+] HEPN count {hepn_cnt}: {len(recs)} sequences")
@@ -143,6 +184,7 @@ class FamilyGrouper:
                 recs[0].id = new_id
                 recs[0].description = ""
                 all_renamed.append(recs[0])
+                meta = meta_lookup.get(orig_id, {})
                 manifest_rows.append(
                     {
                         "new_id": new_id,
@@ -150,6 +192,9 @@ class FamilyGrouper:
                         "hepn_count": hepn_cnt,
                         "family_id": fid,
                         "member_index": 1,
+                        "sra_accession": meta.get("sra_accession", ""),
+                        "repeat_domains": meta.get("repeat_domains", ""),
+                        "score": meta.get("score", ""),
                     }
                 )
                 continue
@@ -172,6 +217,7 @@ class FamilyGrouper:
                     r.id = new_id
                     r.description = ""
                     all_renamed.append(r)
+                    meta = meta_lookup.get(orig_id, {})
                     manifest_rows.append(
                         {
                             "new_id": new_id,
@@ -179,6 +225,9 @@ class FamilyGrouper:
                             "hepn_count": hepn_cnt,
                             "family_id": fid,
                             "member_index": 1,
+                            "sra_accession": meta.get("sra_accession", ""),
+                            "repeat_domains": meta.get("repeat_domains", ""),
+                            "score": meta.get("score", ""),
                         }
                     )
             if sim_matrix is None or len(valid_indices) == 0:
@@ -206,6 +255,7 @@ class FamilyGrouper:
                     r.id = new_id
                     r.description = ""
                     all_renamed.append(r)
+                    meta = meta_lookup.get(orig, {})
                     manifest_rows.append(
                         {
                             "new_id": new_id,
@@ -213,6 +263,9 @@ class FamilyGrouper:
                             "hepn_count": hepn_cnt,
                             "family_id": fid,
                             "member_index": mi,
+                            "sra_accession": meta.get("sra_accession", ""),
+                            "repeat_domains": meta.get("repeat_domains", ""),
+                            "score": meta.get("score", ""),
                         }
                     )
 
@@ -234,6 +287,14 @@ class FamilyGrouper:
         SeqIO.write(all_renamed, fasta_path, "fasta")
         df = pd.DataFrame(manifest_rows)
         df.to_csv(manifest_path, index=False)
+
+        # Synthesis metadata: new_id -> SRA, CRISPR repeats (for downstream pipeline & dashboard)
+        synth_dir = Path("data") / "mined_sequences"
+        synth_dir.mkdir(parents=True, exist_ok=True)
+        synth_path = synth_dir / "synthesis_metadata.csv"
+        synth_df = df[["new_id", "original_id", "sra_accession", "repeat_domains", "score", "hepn_count", "family_id"]]
+        synth_df.to_csv(synth_path, index=False)
+        print(f"          Wrote {synth_path} (SRA + CRISPR repeats for synthesis)")
 
         print(f"\n[SUCCESS] Wrote {fam_fasta_path} ({len(all_renamed)} sequences) [matchmaker input].")
         print(f"          Wrote {fasta_path}, {manifest_path}")
@@ -268,6 +329,16 @@ def main():
         default="*.fasta",
         help="Glob pattern for input files",
     )
+    parser.add_argument(
+        "--metadata-dir",
+        default=os.getenv("FAMILY_METADATA_DIR"),
+        help="Directory with deep_hits_*_metadata.csv (e.g. data/raw_sequences); preserves SRA + CRISPR repeats",
+    )
+    parser.add_argument(
+        "--metadata",
+        default=None,
+        help="Path to specific metadata CSV (overrides --metadata-dir)",
+    )
     args = parser.parse_args()
 
     grouper = FamilyGrouper(
@@ -276,6 +347,8 @@ def main():
         similarity_threshold=args.threshold,
         prefix=args.prefix,
         glob_pattern=args.glob,
+        metadata_dir=args.metadata_dir,
+        metadata_csv=args.metadata,
     )
     grouper.run()
 
