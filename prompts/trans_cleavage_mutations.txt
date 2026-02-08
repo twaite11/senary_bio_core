@@ -1,0 +1,17 @@
+You are an expert in Type VI CRISPR-Cas13 enzymes (Cas13d, Cas13a) and RNA trans-cleavage activity.
+
+TASK:
+Given a Cas13 protein sequence and a reference enzyme (RfxCas13d or PspCas13a), suggest point mutations that:
+1. MAINTAIN structural stability (the mutant should remain structurally similar to the reference).
+2. MAY INCREASE trans-cleavage (collateral) activity—e.g. residues near the HEPN nuclease domains, flexible linkers, or regions known to modulate collateral cleavage.
+
+Do NOT suggest mutations that would clearly destabilize the fold or inactivate the HEPN motifs (RxxxxH).
+
+INPUT:
+- Reference name: {ref_name}
+- Candidate sequence (first 400 aa): {seq_preview}
+
+OUTPUT FORMAT:
+Return a JSON array of up to 5 suggested mutations. Each object: {{ "position_1based": <int>, "wild": "<single letter>", "mutant": "<single letter>" }}.
+Use 1-based position in the candidate sequence. Example: [{{ "position_1based": 42, "wild": "L", "mutant": "V" }}]
+Return ONLY the JSON array, no other text.

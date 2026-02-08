@@ -88,6 +88,14 @@ To keep only **full-enzyme** hits (N-term M, C-term tail after HEPN, not truncat
 - `REQUIRE_FULL_STRUCTURE=1` – When set with `REQUIRE_CRISPR=1`, also require `len(repeat_domains) >= MIN_REPEAT_COUNT` so every hit has CRISPR repeats saved.
 - `MIN_REPEAT_COUNT=1` – Minimum repeat sequences to keep a hit (default 1).
 
+### 2.7 Mining for closest similarity to RfxCas13d / PspCas13a
+
+Set **`ESM_REFERENCE_FASTA=data/references/mining_refs.fasta`** (or path to a FASTA with **RfxCas13d** and **PspCas13a**). The miner scores each ORF against both refs and keeps the **closest** match (max ESM similarity). Leave **`ESM_SIMILARITY_CEILING`** unset so high-similarity hits are not filtered out. Replace placeholder sequences in `mining_refs.fasta` with full sequences from UniProt (e.g. RfxCas13d from PDB 6IV9) for best results.
+
+### 2.8 Design: trans-cleavage mutation suggestions
+
+In **mutate_for_drift** (or **run_full_pipeline**), use **`--use-trans-cleavage-prompt`** (or **`USE_TRANS_CLEAVAGE_PROMPT=1`**) and set **`GEMINI_API_KEY`**. The pipeline will ask Gemini for mutations that maintain structural stability to RfxCas13d or PspCas13a but might increase trans-cleavage activity; suggested mutants are validated with ESM-2 vs the same refs.
+
 ---
 
 ## 3. Pipeline Run Modes

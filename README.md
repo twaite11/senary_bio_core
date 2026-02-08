@@ -125,7 +125,7 @@ Then use `--omegafold-repo /path/to/OmegaFold` or `OMEGAFOLD_REPO`. Output: `dat
 | **sra_scout** | Unannotated metagenomes (WGS) | Normalizes query, tries `wgs[Prop]` → fallback; 6-frame translate, HEPN + topology; **full_orf_checks** (N-term M, C-term tail, contig boundary); saves `undiscovered_typevi_*.fasta` |
 | **autonomous_prospector** | AI-driven continuous mining | LLM → SRAScout.search_wgs → semantic filter → DeepEngine + NeighborhoodWatch → deep_mine ORFs 600–1400 aa; **full_orf_checks**; when REQUIRE_CRISPR/REQUIRE_FULL_STRUCTURE, requires ≥MIN_REPEAT_COUNT repeat domains; saves `deep_hits_*.fasta` + metadata |
 | **full_orf_checks** | Full-enzyme ORF validation | N-term: ORF starts with M; C-term: min tail after last HEPN; contig-boundary: reject ORFs truncated within margin nt (env: REQUIRE_START_M, MIN_CTERM_TAIL, CONTIG_BOUNDARY_MARGIN) |
-| **deep_miner_utils** | Deep learning engine | **DeepEngine**: ESM-2 35M, cosine similarity vs novel Type VI CRISPR enzyme reference; **NeighborhoodWatch**: CRISPR array detection |
+| **deep_miner_utils** | Deep learning engine | **DeepEngine**: ESM-2 35M; scores vs **RfxCas13d** and **PspCas13a** when `ESM_REFERENCE_FASTA` set (closest similarity); **NeighborhoodWatch**: CRISPR array detection |
 | **hepn_filter** | HEPN motif validation | Scans FASTA for ≥2 `R.{4}H` motifs → retains valid enzymes |
 | **debug_sra** | Connectivity check | Tests NCBI fetch with known ID to verify network + translation |
 
@@ -216,7 +216,7 @@ After mining, run the integrated pipeline on a FASTA pool (e.g. latest `deep_hit
 | Pipeline step | What it does |
 |---------------|--------------|
 | **Embed** | ESM-2 embeddings for all sequences → `data/design/embeddings/` |
-| **Mutate for drift** | Propose mutations; keep variants with ESM-2 stability and &lt;85% identity to known Cas13 → `data/design/drift_variants.fasta` |
+| **Mutate for drift** | Score stability vs **RfxCas13d/PspCas13a** (`--stability-refs` or `ESM_REFERENCE_FASTA`); optional **Gemini** trans-cleavage prompt (`--use-trans-cleavage-prompt`) for mutations that maintain structure but may increase trans-cleavage; keep variants &lt;85% identity → `data/design/drift_variants.fasta` |
 | **Structure filter** | OmegaFold → TM-score + HEPN check → `data/structure_pipeline/passed_structures.fasta` |
 | **Identity filter** | Keep only &lt;85% identity to `data/known_cas13.fasta` → `data/identity_filtered/passed.fasta` |
 | **Matchmaker** (optional) | Enzyme × fusion targets → `lead_candidates.csv` |
@@ -299,6 +299,8 @@ collateral_bio_core/
 | `ESM_SIMILARITY_FLOOR`, `ESM_SIMILARITY_CEILING` | Diversity mode: keep hits in [floor, ceiling] (e.g. 0.5–0.82) |
 | `REQUIRE_START_M`, `MIN_CTERM_TAIL`, `CONTIG_BOUNDARY_MARGIN` | Full-enzyme ORF checks: N-term M, C-term tail after HEPN, contig-boundary margin (nt) |
 | `REQUIRE_FULL_STRUCTURE`, `MIN_REPEAT_COUNT` | When 1: require CRISPR array + at least MIN_REPEAT_COUNT repeat domains saved (full locus) |
+| `ESM_REFERENCE_FASTA` | FASTA with **RfxCas13d** and **PspCas13a** (or other refs) for mining and design; mining keeps **closest** similarity (leave `ESM_SIMILARITY_CEILING` unset) |
+| `GEMINI_API_KEY` | Optional: for trans-cleavage mutation suggestions in `mutate_for_drift --use-trans-cleavage-prompt` |
 | `OMEGAFOLD_REPO` | Path to cloned OmegaFold repo (Python 3.11/3.12) |
 
 ### Troubleshooting

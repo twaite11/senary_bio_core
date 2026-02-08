@@ -14,6 +14,7 @@ from typing import Optional
 REF_PDBS = {
     "cas13a": "5W1H",
     "cas13b": "6DTD",
+    "cas13d": "6IV9",  # RfxCas13d
 }
 
 RCSB_URL = "https://files.rcsb.org/download/{pdb}.pdb"
@@ -82,7 +83,7 @@ def main():
     parser.add_argument(
         "--references-dir",
         default="data/structure_pipeline/references",
-        help="Directory for reference PDBs (5W1H, 6DTD)",
+        help="Directory for reference PDBs (5W1H, 6DTD, 6IV9)",
     )
     parser.add_argument(
         "--output",

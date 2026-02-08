@@ -11,7 +11,7 @@ Usage:
 Expects:
   - data/known_cas13.fasta (reference Cas13 sequences for identity/drift)
   - OMEGAFOLD_REPO or --omegafold-repo for structure step (or --skip-structure)
-  - data/structure_pipeline/references/ with 5W1H.pdb, 6DTD.pdb (or run visualization/run_tmscore.py once to download)
+  - data/structure_pipeline/references/ with 5W1H.pdb, 6DTD.pdb, 6IV9.pdb (or run visualization/run_tmscore.py once to download)
 """
 import os
 import sys
@@ -40,6 +40,7 @@ def main():
     parser.add_argument("--omegafold-repo", default=os.environ.get("OMEGAFOLD_REPO"), help="Path to OmegaFold repo")
     parser.add_argument("--max-identity", type=float, default=0.85, help="Drift goal: max identity to known Cas13")
     parser.add_argument("--tm-threshold", type=float, default=0.4, help="Min TM-score for bi-lobed pass")
+    parser.add_argument("--use-trans-cleavage-prompt", action="store_true", help="Use Gemini to suggest mutations that may increase trans-cleavage (maintain stability vs RfxCas13d/PspCas13a)")
     args = parser.parse_args()
 
     input_fasta = args.input
@@ -62,12 +63,17 @@ def main():
         embed_fasta(current_fasta, embed_dir)
         # Step 2b: Mutate for drift
         from modules.design.mutate_for_drift import main as mutate_main
-        sys.argv = [
+        mutate_argv = [
             "mutate_for_drift.py",
             "--input", current_fasta,
             "--output", str(ROOT / "data" / "design" / "drift_variants.fasta"),
             "--max-identity", str(args.max_identity),
         ]
+        if os.environ.get("ESM_REFERENCE_FASTA"):
+            mutate_argv.extend(["--stability-refs", os.environ.get("ESM_REFERENCE_FASTA")])
+        if getattr(args, "use_trans_cleavage_prompt", False) or os.environ.get("USE_TRANS_CLEAVAGE_PROMPT", "").lower() in ("1", "true", "yes"):
+            mutate_argv.append("--use-trans-cleavage-prompt")
+        sys.argv = mutate_argv
         mutate_main()
         current_fasta = str(ROOT / "data" / "design" / "drift_variants.fasta")
         if not Path(current_fasta).exists():

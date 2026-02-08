@@ -1,7 +1,9 @@
 import os
 import torch
 import re
+from pathlib import Path
 from transformers import AutoTokenizer, AutoModel
+from Bio import SeqIO
 from Bio.Seq import Seq
 
 
@@ -17,10 +19,11 @@ def _resolve_device():
 
 
 class DeepEngine:
-    def __init__(self, model_name="facebook/esm2_t12_35M_UR50D"):
+    def __init__(self, model_name="facebook/esm2_t12_35M_UR50D", reference_fasta=None):
         """
         Initializes the ESM-2 Model.
-        Supports CUDA (NVIDIA), ROCm (AMD via PyTorch ROCm build), or CPU.
+        reference_fasta: optional path to FASTA with named refs (e.g. RfxCas13d, PspCas13a).
+        If set, scores against each ref and returns max similarity (closest match).
         Set FAMILY_DEVICE=cuda or cpu to force device.
         """
         self.device = _resolve_device()
@@ -28,14 +31,25 @@ class DeepEngine:
         
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModel.from_pretrained(model_name).to(self.device)
-        self.model.eval() 
-        
-        # --- THE GOLDEN REFERENCE (Cas13d) ---
-        self.ref_seq_segment = "RHYLDEIIEQISEFSKRVILADANLDKVLSAYNKHRDKPIREQAENIIHLFTLTNLGAPAAFKYFDTTIDRKRYTSTKEVLDATLIHQSITGLYETRIDLSQLGGD"
-        
-        # Calculate reference vector once on GPU
-        self.ref_vector = self._get_embedding(self.ref_seq_segment)
-        print(f"[+] Reference Vector Calculated on {self.device}.")
+        self.model.eval()
+
+        self.ref_names = []
+        self.ref_vectors = []
+        path = reference_fasta or os.getenv("ESM_REFERENCE_FASTA", "").strip()
+        if path and Path(path).exists():
+            for rec in SeqIO.parse(path, "fasta"):
+                seq = str(rec.seq).strip()
+                if len(seq) >= 50:
+                    self.ref_names.append(rec.id)
+                    self.ref_vectors.append(self._get_embedding(seq[:1000]))
+            if self.ref_vectors:
+                print(f"[+] Loaded {len(self.ref_vectors)} reference(s) from {path}: {', '.join(self.ref_names)}")
+        if not self.ref_vectors:
+            # Default: single Cas13d-like segment (RfxCas13d-like)
+            self.ref_seq_segment = "RHYLDEIIEQISEFSKRVILADANLDKVLSAYNKHRDKPIREQAENIIHLFTLTNLGAPAAFKYFDTTIDRKRYTSTKEVLDATLIHQSITGLYETRIDLSQLGGD"
+            self.ref_names = ["Cas13d_ref"]
+            self.ref_vectors = [self._get_embedding(self.ref_seq_segment)]
+            print(f"[+] Using default single reference (Cas13d-like) on {self.device}.")
 
     def _get_embedding(self, sequence):
         """Converts Amino Acid sequence into Vector on GPU."""
@@ -93,16 +107,27 @@ class DeepEngine:
             return None, []
 
     def score_candidate(self, candidate_seq):
-        """Returns Similarity Score (0.0 to 1.0)."""
-        if len(candidate_seq) < 300: return 0.0
-        process_seq = candidate_seq[:1000] # Truncate for speed
-        
+        """Returns max similarity (0.0 to 1.0) over all reference vectors (closest match)."""
+        score, _ = self.score_candidate_with_ref(candidate_seq)
+        return score
+
+    def score_candidate_with_ref(self, candidate_seq):
+        """Returns (max_similarity, ref_name) for closest reference (RfxCas13d, PspCas13a, etc.)."""
+        if len(candidate_seq) < 300:
+            return 0.0, self.ref_names[0] if self.ref_names else ""
+        process_seq = candidate_seq[:1000]
         try:
             cand_vector = self._get_embedding(process_seq)
-            cosine_sim = torch.nn.functional.cosine_similarity(self.ref_vector, cand_vector)
-            return cosine_sim.item()
+            best = 0.0
+            best_name = self.ref_names[0] if self.ref_names else ""
+            for name, ref_vec in zip(self.ref_names, self.ref_vectors):
+                sim = torch.nn.functional.cosine_similarity(ref_vec, cand_vector).item()
+                if sim > best:
+                    best = sim
+                    best_name = name
+            return best, best_name
         except Exception:
-            return 0.0
+            return 0.0, self.ref_names[0] if self.ref_names else ""
 
     def passes_diversity_band(self, score):
         """

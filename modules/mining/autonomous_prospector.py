@@ -382,7 +382,10 @@ class AutonomousProspector:
         diversity_ceiling = os.getenv("ESM_SIMILARITY_CEILING", "")
         require_full_structure = os.getenv("REQUIRE_FULL_STRUCTURE", "0").lower() in ("1", "true", "yes")
         min_repeat_count = os.getenv("MIN_REPEAT_COUNT", "1")
+        esm_ref_fasta = os.getenv("ESM_REFERENCE_FASTA", "").strip()
         logging.info(f"Config: DEEP_MINE_MAX={deep_mine_max}, ESM_THRESHOLD={esm_threshold}, REQUIRE_CRISPR={require_crispr}, DIVERSITY_CEILING={diversity_ceiling or 'off'}")
+        if esm_ref_fasta:
+            logging.info(f"ESM_REFERENCE_FASTA set: mining for closest similarity to RfxCas13d/PspCas13a (leave ESM_SIMILARITY_CEILING unset to keep closest matches)")
         logging.info(f"Full enzyme: REQUIRE_START_M={os.getenv('REQUIRE_START_M','1')}, MIN_CTERM_TAIL={os.getenv('MIN_CTERM_TAIL','15')}, REQUIRE_FULL_STRUCTURE={require_full_structure}, MIN_REPEAT_COUNT={min_repeat_count}")
         logging.info(f"ORF size: 600-1400 aa | Broad queries: {len(BROAD_SEARCH_QUERIES)} | SRA_MAX_RECORDS={os.getenv('SRA_MAX_RECORDS', '100')}")
 

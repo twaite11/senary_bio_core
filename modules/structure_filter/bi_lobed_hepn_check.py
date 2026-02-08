@@ -68,15 +68,15 @@ def run_bi_lobed_hepn_filter(
     struct_dir = Path(structures_dir)
     fasta_path = Path(fasta_path)
 
-    # Reference PDBs (Cas13a/b)
+    # Reference PDBs (Cas13a, Cas13b, RfxCas13d)
     ref_pdbs = {}
-    for name, pdb_id in [("cas13a", "5W1H"), ("cas13b", "6DTD")]:
+    for name, pdb_id in [("cas13a", "5W1H"), ("cas13b", "6DTD"), ("cas13d", "6IV9")]:
         p = ref_dir / f"{pdb_id}.pdb"
         if p.exists():
             ref_pdbs[name] = str(p)
 
     if not ref_pdbs:
-        print(f"[!] No reference PDBs in {references_dir}. Run run_tmscore download or add 5W1H.pdb, 6DTD.pdb.")
+        print(f"[!] No reference PDBs in {references_dir}. Run run_tmscore download or add 5W1H.pdb, 6DTD.pdb, 6IV9.pdb.")
 
     seqs = {r.id: str(r.seq) for r in SeqIO.parse(fasta_path, "fasta")} if fasta_path.exists() else {}
 
