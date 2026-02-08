@@ -49,6 +49,20 @@ def run_full_filter(
         output_json=str(results_path),
     )
 
+    # 2b. Write homology_scores.json for dashboard (per-ref: cas13a, cas13b, cas13d)
+    homology_path = Path(structures_dir).parent / "homology_scores.json"
+    homology = {}
+    for sid, r in results.items():
+        h = {}
+        for k in ("cas13a", "cas13b", "cas13d"):
+            if k in r and r[k] is not None:
+                h[k] = r[k]
+        if h:
+            homology[sid] = h
+    homology_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(homology_path, "w") as f:
+        json.dump(homology, f, indent=2)
+
     # 3. Write passed FASTA and failed log
     seqs = {r.id: r for r in SeqIO.parse(input_path, "fasta")}
     passed_ids = [sid for sid, r in results.items() if r["pass_overall"]]

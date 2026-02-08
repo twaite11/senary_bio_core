@@ -47,8 +47,8 @@ def main():
     )
     parser.add_argument(
         "--input",
-        default="data/structure_pipeline/input_2-3_hepn.fasta",
-        help="Input FASTA (2-3 HEPN)",
+        default="data/structure_pipeline/passed_structures.fasta",
+        help="Input FASTA (pipeline: passed_structures.fasta; or input_2-3_hepn.fasta)",
     )
     parser.add_argument(
         "--domains",
@@ -58,7 +58,12 @@ def main():
     parser.add_argument(
         "--homology",
         default="data/structure_pipeline/homology_scores.json",
-        help="Homology scores JSON",
+        help="Homology scores JSON (from pipeline or run_tmscore)",
+    )
+    parser.add_argument(
+        "--filter-results",
+        default="data/structure_pipeline/structure_filter_results.json",
+        help="Fallback: structure filter results (has cas13a/cas13b/cas13d)",
     )
     parser.add_argument(
         "--structures-dir",
@@ -76,6 +81,7 @@ def main():
     input_path = proj / args.input
     domains_path = proj / args.domains
     homology_path = proj / args.homology
+    filter_results_path = proj / args.filter_results
     struct_dir = proj / args.structures_dir
     out_path = Path(args.output)
     if not out_path.is_absolute():
@@ -99,11 +105,18 @@ def main():
         with open(domains_path) as f:
             domains = json.load(f)
 
-    # Load homology
+    # Load homology: pipeline writes homology_scores.json; fallback to structure_filter_results (has cas13a/cas13b/cas13d)
     homology = {}
     if homology_path.exists():
         with open(homology_path) as f:
             homology = json.load(f)
+    if not homology and filter_results_path.exists():
+        with open(filter_results_path) as f:
+            raw = json.load(f)
+        for sid, r in raw.items():
+            h = {k: r[k] for k in ("cas13a", "cas13b", "cas13d") if k in r and r[k] is not None}
+            if h:
+                homology[sid] = h
 
     # PDB paths (relative for fetch from project root)
     pdb_paths = find_pdb_paths(struct_dir, proj) if struct_dir.exists() else {}
@@ -117,6 +130,7 @@ def main():
         h = homology.get(seq_id, {})
         cas13a = h.get("cas13a")
         cas13b = h.get("cas13b")
+        cas13d = h.get("cas13d")
         best = None
         best_name = None
         if cas13a is not None and (best is None or (cas13a or 0) > best):
@@ -125,6 +139,9 @@ def main():
         if cas13b is not None and (best is None or (cas13b or 0) > best):
             best = cas13b
             best_name = "Cas13b"
+        if cas13d is not None and (best is None or (cas13d or 0) > best):
+            best = cas13d
+            best_name = "RfxCas13d"
         rows.append({
             "id": seq_id,
             "length": s.get("length", 0),
@@ -133,6 +150,7 @@ def main():
             "domains": d,
             "cas13a": round(cas13a * 100, 1) if cas13a is not None else None,
             "cas13b": round(cas13b * 100, 1) if cas13b is not None else None,
+            "cas13d": round(cas13d * 100, 1) if cas13d is not None else None,
             "best_match": best_name,
             "best_pct": round((best or 0) * 100, 1) if best is not None else None,
             "pdb_path": pdb_paths.get(seq_id),
@@ -201,6 +219,7 @@ def main():
             <th>HEPN</th>
             <th>Cas13a %</th>
             <th>Cas13b %</th>
+            <th>RfxCas13d %</th>
             <th>Best</th>
           </tr>
         </thead>
@@ -222,6 +241,7 @@ def main():
         tr.innerHTML = `<td>${{r.id}}</td><td>${{r.family}}</td><td>${{r.length}}</td><td>${{r.hepn_count}}</td>
           <td class="pct">${{r.cas13a != null ? r.cas13a + '%' : '-'}}</td>
           <td class="pct">${{r.cas13b != null ? r.cas13b + '%' : '-'}}</td>
+          <td class="pct">${{r.cas13d != null ? r.cas13d + '%' : '-'}}</td>
           <td>${{r.best_match || '-'}}</td>`;
         tr.addEventListener("click", () => selectRow(i));
         tbody.appendChild(tr);

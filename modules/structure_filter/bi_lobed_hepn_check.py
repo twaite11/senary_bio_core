@@ -97,9 +97,11 @@ def run_bi_lobed_hepn_filter(
         seq = seqs.get(seq_id, "")
         hepn_pass = check_hepn_distance_in_pdb(pdb_path, seq_id, seq)
         best_tm = 0.0
-        for ref_path in ref_pdbs.values():
+        per_ref = {}
+        for ref_name, ref_path in ref_pdbs.items():
             tm = compute_tm_score(pdb_path, ref_path)
             if tm is not None:
+                per_ref[ref_name] = round(tm, 4)
                 best_tm = max(best_tm, tm)
         bi_lobed_pass = best_tm >= tm_threshold
         pass_overall = bi_lobed_pass and hepn_pass
@@ -108,6 +110,7 @@ def run_bi_lobed_hepn_filter(
             "bi_lobed_pass": bi_lobed_pass,
             "hepn_pass": hepn_pass,
             "pass_overall": pass_overall,
+            **per_ref,
         }
 
     if output_json:

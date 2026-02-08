@@ -77,6 +77,19 @@ For 2–3 HEPN filtered enzymes, the structure pipeline predicts 3D conformation
 
 *Example: Protein SN04_002 (867 aa) with HEPN motifs highlighted on the sequence bar and detailed motif table (position, length, sequence).*
 
+OmegaFold-predicted structures in the dashboard are colored by **Pfam domain** (when InterPro annotations are available). The 3D viewer uses the same color scheme:
+
+![Domain color legend](assets/structure-domain-legend.png)
+
+| Color | Domain | Pfam | Meaning |
+|-------|--------|------|---------|
+| **Cyan** | HEPN | PF05168 | Higher Eukaryotes and Prokaryotes Nucleotide-binding domain; the **nuclease** that cleaves RNA (RxxxxH motif). Cas13 has 2–3 HEPN domains. |
+| **Orange** | HEL | PF01228 | Helicase-like domain; often involved in crRNA binding and target recognition. |
+| **Slate gray** | WYL | PF18456 | WYL-domain (effector-associated); found in some Type VI systems. |
+| *Spectrum* | — | — | Regions without a mapped Pfam domain are shown in a rainbow gradient by position along the chain. |
+
+Run InterProScan on your 2–3 HEPN FASTA and pass the resulting `domains.json` to the structure dashboard to see domain-colored 3D structures; otherwise the viewer shows the full chain in spectrum coloring.
+
 ### What the Dashboard Shows
 
 | Feature | Description |
@@ -84,7 +97,7 @@ For 2–3 HEPN filtered enzymes, the structure pipeline predicts 3D conformation
 | **Protein ID & length** | Identifier (e.g. `SN04_002`) and total amino acids |
 | **Sequence bar** | Linear map of the protein with domain/motif regions highlighted in cyan |
 | **Motif table** | Start, End, Length, and sequence for each identified HEPN motif |
-| **3D viewer** | Interactive structure (3Dmol.js) with domain coloring |
+| **3D viewer** | Interactive OmegaFold structure (3Dmol.js) with domain coloring as in the table above |
 
 ### Pipeline Commands
 
