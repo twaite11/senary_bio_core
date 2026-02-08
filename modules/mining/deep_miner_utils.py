@@ -104,6 +104,22 @@ class DeepEngine:
         except Exception:
             return 0.0
 
+    def passes_diversity_band(self, score):
+        """
+        When diversity mode is on (ESM_SIMILARITY_CEILING set), accept only scores
+        within [floor, ceiling] to favor distant homologs over "perfect" matches.
+        """
+        floor_s = os.getenv("ESM_SIMILARITY_FLOOR", "")
+        ceiling_s = os.getenv("ESM_SIMILARITY_CEILING", "")
+        if not ceiling_s:
+            return True  # no band: any score above threshold is ok
+        try:
+            floor = float(floor_s) if floor_s else 0.0
+            ceiling = float(ceiling_s)
+            return floor <= score <= ceiling
+        except ValueError:
+            return True
+
 class NeighborhoodWatch:
     """Finds CRISPR Arrays. Uses multiple chunk sizes (24-32bp) and accepts 2+ repeats."""
 
@@ -128,3 +144,30 @@ class NeighborhoodWatch:
                 else:
                     seen[chunk] = 1
         return False
+
+    def get_repeat_domains(self, dna_sequence):
+        """
+        Extract CRISPR repeat sequences from DNA (same logic as has_crispr_array).
+        Returns list of repeat sequences (chunks that appear >= min_repeats) for synthesis metadata.
+        """
+        seq_str = str(dna_sequence)
+        length = len(seq_str)
+        if length < 400:
+            return []
+
+        min_repeats = 3
+        if length < 1500:
+            min_repeats = 2
+
+        repeats = []
+        for chunk_size in (24, 28, 32):
+            seen = {}
+            for i in range(0, length - chunk_size):
+                chunk = seq_str[i : i + chunk_size]
+                if chunk in seen:
+                    seen[chunk] += 1
+                    if seen[chunk] >= min_repeats and chunk not in repeats:
+                        repeats.append(chunk)
+                else:
+                    seen[chunk] = 1
+        return repeats

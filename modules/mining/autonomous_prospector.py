@@ -3,6 +3,7 @@ import json
 import os
 import re
 import sqlite3
+import csv
 import requests
 import logging
 import random
@@ -15,6 +16,7 @@ sys.path.append(os.getcwd())
 try:
     from modules.mining.sra_scout import SRAScout
     from modules.mining.deep_miner_utils import DeepEngine, NeighborhoodWatch
+    from modules.mining.full_orf_checks import full_orf_passes, get_full_orf_config
 except ImportError:
     print("[!] Critical: Modules missing. Ensure 'sra_scout.py' and 'deep_miner_utils.py' exist.")
     sys.exit(1)
@@ -306,7 +308,11 @@ class AutonomousProspector:
 
     def deep_mine(self, id_list):
         require_crispr = os.getenv("REQUIRE_CRISPR", "1").lower() in ("1", "true", "yes")
+        require_full_structure = os.getenv("REQUIRE_FULL_STRUCTURE", "0").lower() in ("1", "true", "yes")
+        min_repeat_count = int(os.getenv("MIN_REPEAT_COUNT", "1"))
         esm_threshold = float(os.getenv("ESM_THRESHOLD", "0.75"))
+        use_diversity_band = os.getenv("ESM_SIMILARITY_CEILING", "").strip() != ""
+        full_orf_cfg = get_full_orf_config()
         hits = []
         for ncbi_id in id_list:
             logging.info(f"   -> Scanning ID {ncbi_id}...")
@@ -329,19 +335,35 @@ class AutonomousProspector:
                     if has_crispr:
                         logging.info(f"      [!] CRISPR Array detected in {ncbi_id}. Analyzing proteins...")
 
+                    repeat_domains = self.context_engine.get_repeat_domains(dna_seq)
+                    contig_len = len(dna_seq)
+
                     frames = [dna_seq[i:].translate(to_stop=False) for i in range(3)]
                     frames += [dna_seq.reverse_complement()[i:].translate(to_stop=False) for i in range(3)]
-                    for frame in frames:
+                    for frame_index, frame in enumerate(frames):
                         orfs = str(frame).split("*")
-                        for orf in orfs:
+                        for orf_index, orf in enumerate(orfs):
                             if 600 <= len(orf) <= 1400:
+                                if not full_orf_passes(
+                                    orf,
+                                    contig_len,
+                                    frame_index,
+                                    orf_index,
+                                    orfs,
+                                    require_m=full_orf_cfg["require_m"],
+                                    min_tail=full_orf_cfg["min_tail"],
+                                    boundary_margin=full_orf_cfg["boundary_margin"],
+                                ):
+                                    continue
                                 score = self.deep_engine.score_candidate(orf)
                                 orfs_scored += 1
                                 if score > best_score:
                                     best_score = score
-                                if score > esm_threshold:
+                                if score > esm_threshold and self.deep_engine.passes_diversity_band(score):
+                                    if (require_full_structure or require_crispr) and len(repeat_domains) < min_repeat_count:
+                                        continue
                                     logging.info(f"      [***] DISCOVERY: Novel Enzyme (Score: {score:.4f})")
-                                    hits.append((f"{ncbi_id}_ORF", orf, score))
+                                    hits.append((f"{ncbi_id}_ORF", orf, score, ncbi_id, repeat_domains))
 
                 if contigs_scanned > 0:
                     logging.info(f"      ID {ncbi_id}: {contigs_scanned} contigs, {contigs_with_crispr} with CRISPR, {orfs_scored} ORFs scored, best={best_score:.3f}")
@@ -357,7 +379,11 @@ class AutonomousProspector:
         esm_threshold = float(os.getenv("ESM_THRESHOLD", "0.75"))
         deep_mine_max = int(os.getenv("DEEP_MINE_MAX", "15"))
         logging.info(f"--- Senary Bio: Deep Prospector (Model: {self.llm.model_name}) ---")
-        logging.info(f"Config: DEEP_MINE_MAX={deep_mine_max}, ESM_THRESHOLD={esm_threshold}, REQUIRE_CRISPR={require_crispr}")
+        diversity_ceiling = os.getenv("ESM_SIMILARITY_CEILING", "")
+        require_full_structure = os.getenv("REQUIRE_FULL_STRUCTURE", "0").lower() in ("1", "true", "yes")
+        min_repeat_count = os.getenv("MIN_REPEAT_COUNT", "1")
+        logging.info(f"Config: DEEP_MINE_MAX={deep_mine_max}, ESM_THRESHOLD={esm_threshold}, REQUIRE_CRISPR={require_crispr}, DIVERSITY_CEILING={diversity_ceiling or 'off'}")
+        logging.info(f"Full enzyme: REQUIRE_START_M={os.getenv('REQUIRE_START_M','1')}, MIN_CTERM_TAIL={os.getenv('MIN_CTERM_TAIL','15')}, REQUIRE_FULL_STRUCTURE={require_full_structure}, MIN_REPEAT_COUNT={min_repeat_count}")
         logging.info(f"ORF size: 600-1400 aa | Broad queries: {len(BROAD_SEARCH_QUERIES)} | SRA_MAX_RECORDS={os.getenv('SRA_MAX_RECORDS', '100')}")
 
         while True:
@@ -396,11 +422,20 @@ class AutonomousProspector:
                 new_discoveries = self.deep_mine(best_ids)
                 if new_discoveries:
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    with open(f"data/raw_sequences/deep_hits_{timestamp}.fasta", "w") as f:
-                        for name, seq, score in new_discoveries:
-                            f.write(f">{name}_Score_{score:.3f}\n{seq}\n")
-                    
-                    logging.info(f"SUCCESS: Saved {len(new_discoveries)} Deep Learning Hits.")
+                    fasta_path = f"data/raw_sequences/deep_hits_{timestamp}.fasta"
+                    meta_path = f"data/raw_sequences/deep_hits_{timestamp}_metadata.csv"
+                    with open(fasta_path, "w") as f:
+                        for name, seq, score, sra_accession, repeat_domains in new_discoveries:
+                            seq_id = f"{name}_Score_{score:.3f}"
+                            f.write(f">{seq_id}\n{seq}\n")
+                    with open(meta_path, "w", newline="", encoding="utf-8") as m:
+                        writer = csv.writer(m)
+                        writer.writerow(["sequence_id", "sra_accession", "repeat_domains", "score"])
+                        for name, seq, score, sra_accession, repeat_domains in new_discoveries:
+                            seq_id = f"{name}_Score_{score:.3f}"
+                            repeat_str = "|".join(repeat_domains) if repeat_domains else ""
+                            writer.writerow([seq_id, sra_accession, repeat_str, f"{score:.3f}"])
+                    logging.info(f"SUCCESS: Saved {len(new_discoveries)} Deep Learning Hits to {fasta_path} and {meta_path}.")
                     hits = len(new_discoveries)
                     self.failure_streak = 0
                 else:

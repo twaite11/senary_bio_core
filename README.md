@@ -40,12 +40,26 @@ We combine computational biology, machine learning, and high-throughput screenin
 
 See **[FILTERING_MAP.md](FILTERING_MAP.md)** for the full filtering map from NCBI scraping → enzyme filters → target filters → matchmaker → expert agent → final novel Type VI CRISPR enzyme candidates.
 
+**Discovery process (high level):**
+
+1. **Mine** – SRA/WGS in obscure environments; 6-frame translate; keep only **full-enzyme** ORFs (N-term M, C-term tail, not truncated) and, when enabled, loci with **CRISPR repeats** (saved in metadata for synthesis).
+2. **Design** – Embed pool (ESM-2), optional interpolate, mutate for drift (stability + &lt;85% identity).
+3. **Structure filter** – OmegaFold → bi-lobed/HEPN check → keep only structure-passed sequences.
+4. **Identity filter** – Keep only sequences &lt;85% identical to known Cas13 (drift goal).
+5. **Matchmaker → Expert Agent** – Enzyme × fusion targets → ARCHS4 + Gemini → final leads.
+
 ```
 ┌─────────────────────────────────────────────┐   ┌─────────────────────────────────────────────┐
 │         THE ARMORY (Enzyme Mining)           │   │        THE VAULT (Target Discovery)         │
 │  ncbi_miner · sra_scout · autonomous_prospector │   │  fusion_metadata · specificity_filter · archs4 │
+│  full_orf_checks · CRISPR repeat metadata   │   │                                             │
 └──────────────────────┬──────────────────────┘   └──────────────────────┬──────────────────────┘
                        └────────────────────┬─────────────────────────────┘
+                                            ▼
+┌───────────────────────────────────────────────────────────────────────────────────────────────────┐
+│  FULL PIPELINE (optional):  embed_pool → mutate_for_drift → structure_filter → identity_filter     │
+│  run_full_pipeline.py  →  data/identity_filtered/passed.fasta  →  MATCHMAKER  →  EXPERT AGENT    │
+└───────────────────────────────────────────────────────────────────────────────────────────────────┘
                                             ▼
                                ┌────────────────────────┐
                                │   MATCHMAKER           │  →  EXPERT AGENT  →  lead_candidates_filtered.csv
@@ -108,8 +122,9 @@ Then use `--omegafold-repo /path/to/OmegaFold` or `OMEGAFOLD_REPO`. Output: `dat
 | Module | Purpose | Logic |
 |--------|---------|-------|
 | **ncbi_miner** | Annotated novel Type VI CRISPR enzymes from NCBI Protein | `Entrez.esearch(db="protein")` → fetch FASTA → save `search_YYYYMMDD.fasta` |
-| **sra_scout** | Unannotated metagenomes (WGS) | Normalizes query, tries `wgs[Prop]` → fallback broader search → BioProject elink; 6-frame translate, HEPN `R.{4,6}H` + topology (100–600 aa spacing); saves `undiscovered_typevi_*.fasta` |
-| **autonomous_prospector** | AI-driven continuous mining | LLM formulates env query → SRAScout.search_wgs → semantic filter → DeepEngine (ESM-2) + NeighborhoodWatch (CRISPR) → deep_mine ORFs 800–1100 aa; SQLite `visited_ids`; saves `deep_hits_*.fasta` |
+| **sra_scout** | Unannotated metagenomes (WGS) | Normalizes query, tries `wgs[Prop]` → fallback; 6-frame translate, HEPN + topology; **full_orf_checks** (N-term M, C-term tail, contig boundary); saves `undiscovered_typevi_*.fasta` |
+| **autonomous_prospector** | AI-driven continuous mining | LLM → SRAScout.search_wgs → semantic filter → DeepEngine + NeighborhoodWatch → deep_mine ORFs 600–1400 aa; **full_orf_checks**; when REQUIRE_CRISPR/REQUIRE_FULL_STRUCTURE, requires ≥MIN_REPEAT_COUNT repeat domains; saves `deep_hits_*.fasta` + metadata |
+| **full_orf_checks** | Full-enzyme ORF validation | N-term: ORF starts with M; C-term: min tail after last HEPN; contig-boundary: reject ORFs truncated within margin nt (env: REQUIRE_START_M, MIN_CTERM_TAIL, CONTIG_BOUNDARY_MARGIN) |
 | **deep_miner_utils** | Deep learning engine | **DeepEngine**: ESM-2 35M, cosine similarity vs novel Type VI CRISPR enzyme reference; **NeighborhoodWatch**: CRISPR array detection |
 | **hepn_filter** | HEPN motif validation | Scans FASTA for ≥2 `R.{4}H` motifs → retains valid enzymes |
 | **debug_sra** | Connectivity check | Tests NCBI fetch with known ID to verify network + translation |
@@ -176,22 +191,48 @@ For **Autonomous Prospector**: `pip install torch transformers requests`
 | `novel_fusions.csv` | Discovery targets |
 | `disease_matrix_*.csv` / `KB_and_Pub_Recur_per_cancer.csv` | Fusion × cancer matrix |
 | `data/expression_data/human_matrix.h5` | ARCHS4 (download from [ARCHS4](https://maayanlab.cloud/archs4/)) |
+| `data/known_cas13.fasta` | Known Cas13 sequences (Lwa, Rfx, etc.) for identity/drift filter; see `data/known_cas13.fasta.example` |
 
-Regenerate CSVs: `python utils/split_excel.py`
+Mining outputs: `data/raw_sequences/deep_hits_*.fasta` and `deep_hits_*_metadata.csv` (SRA accession + CRISPR repeat domains per hit). Regenerate CSVs: `python utils/split_excel.py`
 
 ### Workflow Steps
 
 | Step | Command |
 |------|---------|
-| **1. Mine Enzymes** | `python -c "from modules.mining.ncbi_miner import EnzymeMiner; EnzymeMiner().search_and_fetch('Type VI CRISPR')"` |
-| | SRA Scout: `SRAScout().search_wgs(...)` → `fetch_and_mine` |
-| | Autonomous Prospector: `python modules/mining/autonomous_prospector.py` |
+| **1. Mine Enzymes** | NCBI Protein: `python -c "from modules.mining.ncbi_miner import EnzymeMiner; EnzymeMiner().search_and_fetch('Type VI CRISPR')"` |
+| | SRA Scout: `SRAScout().search_wgs(...)` → `fetch_and_mine` (full-enzyme ORF checks applied) |
+| | Autonomous Prospector: `python modules/mining/autonomous_prospector.py` (full-enzyme + optional CRISPR repeat requirement; saves `deep_hits_*.fasta` + `*_metadata.csv` with SRA + repeat domains) |
 | **2. Family Grouping** | `python modules/mining/family_grouper.py` (ESM-2 homology, SN01_001 naming) |
 | **3. Specificity Filter** | `python modules/targeting/specificity_filter.py` |
 | **4. Matchmaker** | `python modules/matchmaker.py` |
 | **5. Expert Agent** | `python modules/analysis/expert_agent.py` (.env: GEMINI_API_KEY) |
 | **6. ARCHS4 Test** | `python run_targeting.py` |
 | **7. Structure Pipeline** | See [Structure Pipeline & Dashboard](#-structure-pipeline--dashboard) above |
+
+### Full 4-Step Pipeline (Design → Structure → Identity → Matchmaker)
+
+After mining, run the integrated pipeline on a FASTA pool (e.g. latest `deep_hits_*.fasta` or merged pool):
+
+| Pipeline step | What it does |
+|---------------|--------------|
+| **Embed** | ESM-2 embeddings for all sequences → `data/design/embeddings/` |
+| **Mutate for drift** | Propose mutations; keep variants with ESM-2 stability and &lt;85% identity to known Cas13 → `data/design/drift_variants.fasta` |
+| **Structure filter** | OmegaFold → TM-score + HEPN check → `data/structure_pipeline/passed_structures.fasta` |
+| **Identity filter** | Keep only &lt;85% identity to `data/known_cas13.fasta` → `data/identity_filtered/passed.fasta` |
+| **Matchmaker** (optional) | Enzyme × fusion targets → `lead_candidates.csv` |
+
+```bash
+# With GPU (OmegaFold on this machine)
+python run_full_pipeline.py --input data/raw_sequences/deep_hits_latest.fasta --run-matchmaker
+
+# No GPU: skip structure filter
+python run_full_pipeline.py --skip-structure --run-matchmaker
+
+# Use latest deep_hits automatically
+python run_full_pipeline.py --run-matchmaker
+```
+
+**Full enzyme & CRISPR repeats (mining):** Set `REQUIRE_START_M=1`, `MIN_CTERM_TAIL=15`, `REQUIRE_FULL_STRUCTURE=1`, `MIN_REPEAT_COUNT=1` in `.env` to keep only full-enzyme ORFs and loci with at least one CRISPR repeat saved. See [Configuration](#%EF%B8%8F-configuration) and **[docs/VPS_RUN_PLAN.md](docs/VPS_RUN_PLAN.md)**.
 
 ---
 
@@ -207,18 +248,30 @@ collateral_bio_core/
 ├── assets/
 │   └── structure-dashboard-screenshot.png
 ├── data/
-│   ├── mined_sequences/       # deep_hits_*.fasta → family_grouped_*.fasta
+│   ├── raw_sequences/         # deep_hits_*.fasta, deep_hits_*_metadata.csv (SRA + repeat domains)
+│   ├── mined_sequences/       # family_grouped_*.fasta
+│   ├── design/                # embeddings/, drift_variants.fasta
+│   ├── structure_pipeline/    # passed_structures.fasta, structures/omegafold/, references/
+│   ├── identity_filtered/     # passed.fasta, identity_metadata.csv
 │   ├── expression_data/       # human_matrix.h5
-│   ├── structure_pipeline/    # input_2-3_hepn.fasta, structures/omegafold/
+│   ├── known_cas13.fasta      # reference sequences for identity/drift
 │   ├── high_specificity_targets.csv
 │   ├── known_fusions.csv, novel_fusions.csv
 │   └── disease_matrix_*.csv
 ├── modules/
-│   ├── mining/                # ncbi_miner, sra_scout, autonomous_prospector, family_grouper, hepn_filter
+│   ├── mining/                # ncbi_miner, sra_scout, autonomous_prospector, full_orf_checks, family_grouper, hepn_filter
+│   ├── design/                # embed_pool, interpolate, mutate_for_drift (ESM-2 latent + drift)
+│   ├── structure_filter/      # predict_structures, bi_lobed_hepn_check, run_filter
+│   ├── identity_filter.py     # drift goal: max identity < 85%
 │   ├── targeting/             # archs4_loader, fusion_metadata, specificity_filter
 │   ├── analysis/              # expert_agent
 │   ├── discovery/             # fusion_caller
 │   └── matchmaker.py
+├── run_full_pipeline.py       # orchestration: embed → mutate → structure → identity [→ matchmaker]
+├── config/
+│   └── pipeline.env.example   # env vars for pipeline / VPS
+├── docs/
+│   └── VPS_RUN_PLAN.md        # how to run the full pipeline on a VPS
 ├── visualization/
 │   ├── filter_23_hepn.py
 │   ├── run_omegafold.py
@@ -243,6 +296,9 @@ collateral_bio_core/
 | `NORMAL_MAX_TPM`, `CANCER_MIN_TPM` | ARCHS4 filter thresholds |
 | `ENRICHMENT_FACTOR`, `USE_ORGAN_SPECIFIC` | Organ-specific ARCHS4 |
 | `LLM_PROVIDER`, `LLM_LOCAL_URL`, `LLM_MODEL` | Prospector LLM (e.g. Ollama) |
+| `ESM_SIMILARITY_FLOOR`, `ESM_SIMILARITY_CEILING` | Diversity mode: keep hits in [floor, ceiling] (e.g. 0.5–0.82) |
+| `REQUIRE_START_M`, `MIN_CTERM_TAIL`, `CONTIG_BOUNDARY_MARGIN` | Full-enzyme ORF checks: N-term M, C-term tail after HEPN, contig-boundary margin (nt) |
+| `REQUIRE_FULL_STRUCTURE`, `MIN_REPEAT_COUNT` | When 1: require CRISPR array + at least MIN_REPEAT_COUNT repeat domains saved (full locus) |
 | `OMEGAFOLD_REPO` | Path to cloned OmegaFold repo (Python 3.11/3.12) |
 
 ### Troubleshooting
@@ -251,6 +307,8 @@ collateral_bio_core/
 - **"ARCHS4 file not found"** – Download `human_matrix.h5` into `data/expression_data/`.
 - **Prospector import error** – Install `torch`, `transformers`, `requests`.
 - **OmegaFold Python 3.12** – Use clone + `--omegafold-repo`.
+- **No hits from mining** – Check `REQUIRE_START_M`, `MIN_CTERM_TAIL`; relax or set `REQUIRE_CRISPR=0` / `REQUIRE_FULL_STRUCTURE=0` to test.
+- **Identity filter keeps all** – Add sequences to `data/known_cas13.fasta`; otherwise max identity is 0 and all pass.
 
 ---
 

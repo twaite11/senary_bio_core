@@ -1,7 +1,17 @@
 import os
 import re
+import sys
 from Bio import Entrez, Seq, SeqIO
 from datetime import datetime
+
+# Allow running from project root (modules.mining) or from mining/ (full_orf_checks)
+_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _root not in sys.path:
+    sys.path.insert(0, _root)
+try:
+    from modules.mining.full_orf_checks import full_orf_passes, get_full_orf_config
+except ImportError:
+    from full_orf_checks import full_orf_passes, get_full_orf_config
 
 # Configure your email for NCBI
 Entrez.email = "founder@senarybio.com"
@@ -131,9 +141,13 @@ class SRAScout:
         
         candidates = []
         
+        full_orf_cfg = get_full_orf_config()
+        contig_len = 0
+
         for record in SeqIO.parse(handle, "fasta"):
             dna_seq = record.seq
-            
+            contig_len = len(dna_seq)
+
             # --- 6-FRAME TRANSLATION ---
             # DNA can be read in 3 frames forward, 3 frames backward.
             # We check all of them.
@@ -155,8 +169,19 @@ class SRAScout:
                 # We split by stop codons (*) to find Open Reading Frames (ORFs)
                 orfs = str(protein_seq).split("*")
                 
-                for orf in orfs:
+                for orf_index, orf in enumerate(orfs):
                     if self.min_size <= len(orf) <= self.max_size:
+                        if not full_orf_passes(
+                            orf,
+                            contig_len,
+                            i,
+                            orf_index,
+                            orfs,
+                            require_m=full_orf_cfg["require_m"],
+                            min_tail=full_orf_cfg["min_tail"],
+                            boundary_margin=full_orf_cfg["boundary_margin"],
+                        ):
+                            continue
                         if self._is_cas13d_candidate(orf):
                             # FOUND ONE!
                             cand_id = f"NewCas13d_{record.id}_Frame{i}"
