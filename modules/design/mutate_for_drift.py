@@ -33,8 +33,11 @@ def pairwise_identity(seq1: str, seq2: str) -> float:
     except: pass
     # #endregion
     aligner = Align.PairwiseAligner(mode="global", substitution_matrix=substitution_matrices.load("BLOSUM62"))
-    # Limit to 1 alignment to prevent overflow when counting optimal alignments
-    aligner.max_alignments = 1
+    # Limit to 1 alignment when supported (Biopython 1.86+ no longer allows setting this)
+    try:
+        aligner.max_alignments = 1
+    except AttributeError:
+        pass
     # #region agent log
     try:
         with open(log_path, "a", encoding="utf-8") as f:
@@ -62,7 +65,10 @@ def pairwise_identity(seq1: str, seq2: str) -> float:
         # #endregion
         # Fallback: use local alignment which is faster and less likely to overflow
         aligner_fallback = Align.PairwiseAligner(mode="local", substitution_matrix=substitution_matrices.load("BLOSUM62"))
-        aligner_fallback.max_alignments = 1
+        try:
+            aligner_fallback.max_alignments = 1
+        except AttributeError:
+            pass
         alns_fallback = aligner_fallback.align(seq1, seq2)
         a = next(iter(alns_fallback), None)
         if a is None:

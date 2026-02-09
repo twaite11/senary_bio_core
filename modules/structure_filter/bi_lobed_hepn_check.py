@@ -17,8 +17,35 @@ def get_hepn_positions(sequence: str) -> List[Tuple[int, int]]:
     return [(m.start(), m.end()) for m in HEPN_REGEX.finditer(sequence)]
 
 
+def _tm_score_tmtools_from_pdb(pdb_a: str, pdb_b: str) -> Optional[float]:
+    """
+    Compute TM-score from two PDB paths using tmtools.tm_align + tmtools.io.
+    The tmtools package (PyPI) exposes tm_align(coords1, coords2, seq1, seq2), not tm_score(path, path).
+    """
+    try:
+        from tmtools import tm_align
+        from tmtools.io import get_structure, get_residue_data
+    except ImportError:
+        return None
+    try:
+        s1 = get_structure(pdb_a)
+        s2 = get_structure(pdb_b)
+        chain1 = next(s1.get_chains(), None)
+        chain2 = next(s2.get_chains(), None)
+        if chain1 is None or chain2 is None:
+            return None
+        coords1, seq1 = get_residue_data(chain1)
+        coords2, seq2 = get_residue_data(chain2)
+        if coords1 is None or coords2 is None or not seq1 or not seq2:
+            return None
+        res = tm_align(coords1, coords2, seq1, seq2)
+        return float(getattr(res, "tm_norm_chain1", getattr(res, "tm_score", None)))
+    except Exception:
+        return None
+
+
 def compute_tm_score(pdb_query: str, pdb_ref: str) -> Optional[float]:
-    """TM-score via US-align or tmtools."""
+    """TM-score via US-align or tmtools (tm_align + io for PDB paths)."""
     try:
         result = subprocess.run(
             ["USalign", pdb_query, pdb_ref],
@@ -32,13 +59,50 @@ def compute_tm_score(pdb_query: str, pdb_ref: str) -> Optional[float]:
             return float(m.group(1))
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
+    # tmtools: try legacy tm_score(path, path) first, then PDB load + tm_align
     try:
         import tmtools
-        res = tmtools.tm_score(pdb_query, pdb_ref)
-        return getattr(res, "tm_norm_chain1", res.tm_score)
+        if hasattr(tmtools, "tm_score"):
+            res = tmtools.tm_score(pdb_query, pdb_ref)
+            return float(getattr(res, "tm_norm_chain1", res.tm_score))
     except Exception:
         pass
+    score = _tm_score_tmtools_from_pdb(pdb_query, pdb_ref)
+    if score is not None:
+        return score
     return None
+
+
+def check_tm_score_available(references_dir: str) -> bool:
+    """
+    Verify TM-score can be computed (US-align or tmtools) before running OmegaFold.
+    Uses reference PDBs in references_dir; returns True if a score is obtained.
+    """
+    ref_dir = Path(references_dir)
+    ref_pdb_ids = ["5W1H", "6DTD", "6IV9"]
+    ref_paths = [ref_dir / f"{pdb_id}.pdb" for pdb_id in ref_pdb_ids]
+    ref_paths = [str(p) for p in ref_paths if p.exists()]
+
+    if len(ref_paths) < 1:
+        print(
+            "[!] TM-score check failed: no reference PDBs found in "
+            f"{references_dir}. Add 5W1H.pdb, 6DTD.pdb, or 6IV9.pdb (e.g. run "
+            "visualization/run_tmscore.py with download), or install tmtools/USalign."
+        )
+        return False
+
+    # Use two refs if available, else same ref vs itself
+    pdb_a, pdb_b = ref_paths[0], ref_paths[1] if len(ref_paths) > 1 else ref_paths[0]
+    score = compute_tm_score(pdb_a, pdb_b)
+    if score is not None and isinstance(score, (int, float)):
+        print(f"[+] TM-score check OK (score={score:.4f}). Proceeding with structure filter.")
+        return True
+    print(
+        "[!] TM-score check failed: could not compute TM-score. Install tmtools "
+        "('pip install tmtools') in the same environment you use to run the pipeline, "
+        "or put USalign on your PATH."
+    )
+    return False
 
 
 def check_hepn_distance_in_pdb(pdb_path: str, seq_id: str, sequence: str) -> bool:
