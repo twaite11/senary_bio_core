@@ -39,7 +39,7 @@ def main():
     parser.add_argument("--run-matchmaker", action="store_true", help="Run matchmaker on final FASTA")
     parser.add_argument("--omegafold-repo", default=os.environ.get("OMEGAFOLD_REPO"), help="Path to OmegaFold repo")
     parser.add_argument("--max-identity", type=float, default=0.85, help="Drift goal: max identity to known Cas13")
-    parser.add_argument("--tm-threshold", type=float, default=0.4, help="Min TM-score for bi-lobed pass")
+    parser.add_argument("--tm-threshold", type=float, default=0.25, help="Min TM-score for bi-lobed pass (0.25-0.4 relaxed)")
     parser.add_argument("--structure-batch-size", type=int, default=5, help="Sequences per OmegaFold batch to limit VRAM (default 5)")
     parser.add_argument("--use-trans-cleavage-prompt", action="store_true", help="Use Gemini to suggest mutations that may increase trans-cleavage (maintain stability vs RfxCas13d/PspCas13a)")
     parser.add_argument("--max-seqs-per-enzyme", type=int, default=10000, help="Limit to top N sequences per enzyme (by ESM score) to reduce memory usage. Default: 10000")

@@ -18,33 +18,39 @@ def run_full_filter(
     output_failed_log: str,
     structures_dir: str,
     references_dir: str,
-    tm_threshold: float = 0.4,
+    tm_threshold: float = 0.25,
     omegafold_repo: str = None,
     device: str = None,
     batch_size: int = 5,
+    filter_only: bool = False,
 ) -> int:
     """
     Run OmegaFold -> bi_lobed_hepn check -> write passed FASTA and failed log.
-    Returns count of passed sequences. Processes OmegaFold in batches to limit VRAM.
+    If filter_only=True, skip OmegaFold and run filter on existing PDBs in structures_dir.
+    Returns count of passed sequences.
     """
     input_path = Path(input_fasta)
     if not input_path.exists():
         print(f"[!] Input not found: {input_fasta}")
         return 0
 
-    # 0. Verify TM-score (tmtools or USalign) works before starting OmegaFold
+    # 0. Verify TM-score (tmtools or USalign) works
     if not check_tm_score_available(references_dir):
         print("[!] Aborting structure filter. Fix TM-score (tmtools/USalign) and re-run.")
         return -1
 
-    # 1. Predict structures in batches
-    run_omegafold(
-        str(input_path),
-        structures_dir,
-        omegafold_repo=omegafold_repo,
-        device=device,
-        batch_size=batch_size,
-    )
+    # 1. Predict structures in batches (skip if --filter-only)
+    if not filter_only:
+        run_omegafold(
+            str(input_path),
+            structures_dir,
+            omegafold_repo=omegafold_repo,
+            device=device,
+            batch_size=batch_size,
+        )
+    else:
+        n_pdb = len(list(Path(structures_dir).glob("*.pdb")))
+        print(f"[*] Filter-only mode: skipping OmegaFold, using {n_pdb} existing PDB(s) in {structures_dir}")
 
     # 2. Run filter
     results_path = Path(structures_dir).parent / "structure_filter_results.json"
@@ -95,10 +101,11 @@ def main():
     parser.add_argument("--failed-log", default="data/structure_pipeline/failed_structures.log")
     parser.add_argument("--structures-dir", default="data/structure_pipeline/structures/omegafold")
     parser.add_argument("--references-dir", default="data/structure_pipeline/references")
-    parser.add_argument("--tm-threshold", type=float, default=0.4)
+    parser.add_argument("--tm-threshold", type=float, default=0.25, help="Min TM-score for bi-lobed pass (default 0.25, was 0.4)")
     parser.add_argument("--omegafold-repo", default=os.environ.get("OMEGAFOLD_REPO"))
     parser.add_argument("--device", default=None)
     parser.add_argument("--batch-size", type=int, default=5, help="Sequences per OmegaFold batch to limit VRAM")
+    parser.add_argument("--filter-only", action="store_true", help="Skip OmegaFold; run TM-score + HEPN filter on existing PDBs only")
     args = parser.parse_args()
 
     n = run_full_filter(
@@ -111,6 +118,7 @@ def main():
         omegafold_repo=args.omegafold_repo,
         device=args.device,
         batch_size=args.batch_size,
+        filter_only=args.filter_only,
     )
     return 0 if n >= 0 else 1
 

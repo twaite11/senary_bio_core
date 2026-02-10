@@ -96,6 +96,16 @@ Set **`ESM_REFERENCE_FASTA=data/references/mining_refs.fasta`** (or path to a FA
 
 In **mutate_for_drift** (or **run_full_pipeline**), use **`--use-trans-cleavage-prompt`** (or **`USE_TRANS_CLEAVAGE_PROMPT=1`**) and set **`GEMINI_API_KEY`**. The pipeline will ask Gemini for mutations that maintain structural stability to RfxCas13d or PspCas13a but might increase trans-cleavage activity; suggested mutants are validated with ESM-2 vs the same refs.
 
+### 2.9 HMMER + shotgun mining (optional)
+
+- **HMMER:** Off by default. Set **`USE_HMMER=1`** to screen ORFs with Pfam Cas13/HEPN HMMs (e.g. PF05168) before ESM-2. Requires HMMs in `data/hmm/`:
+  ```bash
+  # Install HMMER (for fetch script), then:
+  python scripts/fetch_pfam_cas13_hmms.py
+  ```
+  If you don't run the script, see `data/hmm/README.md` for manual `wget` + `hmmfetch` steps.
+- **Shotgun SRA:** After the prospector has cycled through all broad (usual-suspects) queries, it can pull **random metagenomes** from NCBI. Default: `SHOTGUN_AFTER_EXHAUSTED=1`, `SHOTGUN_PROBABILITY=0.8`. Set `SHOTGUN_AFTER_EXHAUSTED=0` to disable.
+
 ---
 
 ## 3. Pipeline Run Modes
@@ -104,11 +114,23 @@ In **mutate_for_drift** (or **run_full_pipeline**), use **`--use-trans-cleavage-
 
 Run the autonomous prospector to fill `data/raw_sequences/deep_hits_*.fasta` and metadata. No GPU required for mining; GPU speeds up ESM-2 scoring.
 
+**Default (no HMMER, shotgun enabled after broad list exhausted):**
+
 ```bash
 source venv/bin/activate
 export ESM_SIMILARITY_CEILING=0.82   # diversity mode: favor distant homologs
 python modules/mining/autonomous_prospector.py
 # Runs until stopped. Check data/raw_sequences/ and data/prospector.db.
+```
+
+**With HMMER screening (must populate data/hmm first):**
+
+```bash
+source venv/bin/activate
+export USE_HMMER=1
+export HMM_DIR=data/hmm
+export ESM_SIMILARITY_CEILING=0.82
+python modules/mining/autonomous_prospector.py
 ```
 
 ### Mode B: Full pipeline (post-mine) on latest FASTA
@@ -210,8 +232,60 @@ run_identity_filter(
 
 ---
 
-## 6. Troubleshooting
+## 6. Quick VPS setup and run (copy-paste)
 
+One-time setup, then start mining (with optional HMMER).
+
+```bash
+# 1) System
+sudo apt-get update && sudo apt-get install -y python3.10 python3.10-venv git
+
+# 2) Repo + venv
+cd /opt && git clone https://github.com/your-org/collateral_bio_core.git && cd collateral_bio_core
+python3.10 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+
+# 3) Config
+cp config/pipeline.env.example .env
+# Edit .env: ESM_REFERENCE_FASTA, LLM_LOCAL_URL if using Ollama, etc.
+
+# 4) References (mining + identity)
+# Put full RfxCas13d / PspCas13b in data/references/mining_refs.fasta (see data/references/README.md)
+# Put known Cas13 in data/references/known_cas13.fasta
+
+# 5) Optional: HMMER HMMs (only if you will set USE_HMMER=1)
+sudo apt-get install -y hmmer   # for hmmfetch
+python scripts/fetch_pfam_cas13_hmms.py
+
+# 6) Run mining (HMMER off by default)
+export ESM_REFERENCE_FASTA=data/references/mining_refs.fasta
+python modules/mining/autonomous_prospector.py
+```
+
+To **enable HMMER** and keep shotgun after exhausting usual suspects:
+
+```bash
+export USE_HMMER=1
+export HMM_DIR=data/hmm
+export ESM_REFERENCE_FASTA=data/references/mining_refs.fasta
+python modules/mining/autonomous_prospector.py
+```
+
+To run in background:
+
+```bash
+tmux new -s mining
+source venv/bin/activate
+export USE_HMMER=1 HMM_DIR=data/hmm ESM_REFERENCE_FASTA=data/references/mining_refs.fasta
+python modules/mining/autonomous_prospector.py
+# Ctrl+B, D to detach
+```
+
+---
+
+## 7. Troubleshooting
+
+- **USE_HMMER=1 but no HMMs:** Run `python scripts/fetch_pfam_cas13_hmms.py` (requires HMMER `hmmfetch` in PATH) or follow `data/hmm/README.md` to fetch PF05168 manually.
 - **Out of memory (ESM-2):** Set `EMBED_BATCH_SIZE=25` or `FAMILY_DEVICE=cpu`.
 - **OmegaFold not found:** Set `OMEGAFOLD_REPO` to the clone path or use `--skip-structure`.
 - **No reference PDBs:** Run `visualization/run_tmscore.py` once (without `--skip-download`) to fetch 5W1H and 6DTD.

@@ -17,9 +17,14 @@ try:
     from modules.mining.sra_scout import SRAScout
     from modules.mining.deep_miner_utils import DeepEngine, NeighborhoodWatch
     from modules.mining.full_orf_checks import full_orf_passes, get_full_orf_config
-except ImportError:
-    print("[!] Critical: Modules missing. Ensure 'sra_scout.py' and 'deep_miner_utils.py' exist.")
+except ImportError as e:
+    print("[!] Critical: Modules missing. Ensure 'sra_scout.py' and 'deep_miner_utils.py' exist.", e)
     sys.exit(1)
+try:
+    from modules.mining.hmmer_miner import load_hmms, scan_single
+except ImportError:
+    load_hmms = None
+    scan_single = None
 
 # --- CONFIGURATION ---
 DB_PATH = "data/prospector.db"
@@ -162,6 +167,9 @@ class AutonomousProspector:
         c.execute('''CREATE TABLE IF NOT EXISTS query_cycle 
                      (id INTEGER PRIMARY KEY CHECK (id=1), idx INTEGER)''')
         c.execute('INSERT OR IGNORE INTO query_cycle (id, idx) VALUES (1, 0)')
+        c.execute('''CREATE TABLE IF NOT EXISTS shotgun_eligible 
+                     (id INTEGER PRIMARY KEY CHECK (id=1), eligible INTEGER DEFAULT 0)''')
+        c.execute('INSERT OR IGNORE INTO shotgun_eligible (id, eligible) VALUES (1, 0)')
         conn.commit()
         conn.close()
 
@@ -173,11 +181,28 @@ class AutonomousProspector:
         row = c.fetchone()
         idx = (row[0] if row else 0) % len(BROAD_SEARCH_QUERIES)
         query = BROAD_SEARCH_QUERIES[idx]
-        c.execute("UPDATE query_cycle SET idx = ? WHERE id=1", ((idx + 1) % len(BROAD_SEARCH_QUERIES),))
+        new_idx = (idx + 1) % len(BROAD_SEARCH_QUERIES)
+        c.execute("UPDATE query_cycle SET idx = ? WHERE id=1", (new_idx,))
+        # When we wrap to 0, we've exhausted the usual-suspects list
+        if new_idx == 0:
+            c.execute("UPDATE shotgun_eligible SET eligible = 1 WHERE id=1")
         conn.commit()
         conn.close()
         strategy = f"Broad[{idx + 1}/{len(BROAD_SEARCH_QUERIES)}]: {query[:40]}..."
         return query, strategy
+
+    def is_shotgun_eligible(self):
+        """True if we've cycled through all BROAD_SEARCH_QUERIES at least once."""
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT eligible FROM shotgun_eligible WHERE id=1")
+        row = c.fetchone()
+        conn.close()
+        return (row[0] if row else 0) == 1
+
+    def get_shotgun_query(self):
+        """Return (query, strategy) for shotgun random metagenome mode."""
+        return "metagenome", "Shotgun(random metagenome)"
 
     def get_random_super_broad_query(self):
         """Pick a random very-broad query to break out of repeated same-SRA loops."""
@@ -337,7 +362,20 @@ class AutonomousProspector:
         min_repeat_count = int(os.getenv("MIN_REPEAT_COUNT", "1"))
         esm_threshold = float(os.getenv("ESM_THRESHOLD", "0.75"))
         use_diversity_band = os.getenv("ESM_SIMILARITY_CEILING", "").strip() != ""
+        use_hmmer = os.getenv("USE_HMMER", "0").lower() in ("1", "true", "yes")
+        hmm_dir = os.getenv("HMM_DIR", "data/hmm")
+        hmm_evalue = float(os.getenv("HMM_EVALUE", "1e-5"))
         full_orf_cfg = get_full_orf_config()
+        hmms = None
+        if use_hmmer:
+            if load_hmms is None or scan_single is None:
+                logging.warning("USE_HMMER=1 but hmmer_miner not available (install pyhmmer); continuing with ESM-only.")
+                use_hmmer = False
+            else:
+                hmms = load_hmms(hmm_dir)
+                if not hmms:
+                    logging.warning("USE_HMMER=1 but no HMMs found in %s; continuing with ESM-only.", hmm_dir)
+                    use_hmmer = False
         hits = []
         for ncbi_id in id_list:
             logging.info(f"   -> Scanning ID {ncbi_id}...")
@@ -380,6 +418,10 @@ class AutonomousProspector:
                                     boundary_margin=full_orf_cfg["boundary_margin"],
                                 ):
                                     continue
+                                if use_hmmer:
+                                    hmm_hit = scan_single(orf, hmms=hmms, e_value_cutoff=hmm_evalue)
+                                    if hmm_hit is None:
+                                        continue
                                 score = self.deep_engine.score_candidate(orf)
                                 orfs_scored += 1
                                 if score > best_score:
@@ -419,6 +461,12 @@ class AutonomousProspector:
         stale_overlap_ratio = float(os.getenv("STALE_OVERLAP_RATIO", "0.6"))
         stale_new_ids_max = int(os.getenv("STALE_NEW_IDS_MAX", "5"))
         pagination_max_pages = int(os.getenv("SRA_PAGINATION_MAX_PAGES", "10"))
+        shotgun_after_exhausted = os.getenv("SHOTGUN_AFTER_EXHAUSTED", "1").lower() in ("1", "true", "yes")
+        shotgun_probability = float(os.getenv("SHOTGUN_PROBABILITY", "0.8"))
+        use_hmmer = os.getenv("USE_HMMER", "0").lower() in ("1", "true", "yes")
+        logging.info(f"USE_HMMER={use_hmmer} (HMM screening off by default; set USE_HMMER=1 to enable)")
+        if shotgun_after_exhausted:
+            logging.info(f"SHOTGUN: after usual suspects exhausted, use random metagenome (probability={shotgun_probability})")
 
         while True:
             visited = self.get_visited_ids()
@@ -428,12 +476,23 @@ class AutonomousProspector:
             if use_very_broad:
                 self._repeat_streak = 0
                 logging.info("Repeat streak reached: forcing very broad random search to break loop.")
+            # Shotgun: after exhausting broad list, pull random metagenomes (unless very_broad takes precedence)
+            use_shotgun = (
+                shotgun_after_exhausted
+                and self.is_shotgun_eligible()
+                and not use_very_broad
+                and (shotgun_probability >= 1.0 or random.random() < shotgun_probability)
+            )
             # Use broad diverse list when: failure streak, or already visited many IDs (reduces overlap)
             use_broad = self.failure_streak >= 1 or len(visited) >= broad_threshold
             if use_very_broad:
                 query, strategy = self.get_random_super_broad_query()
                 logging.info(f"PLAN: {strategy} | Query: {query}")
                 max_records = min(200, int(os.getenv("SRA_MAX_RECORDS", "100")) * 2)
+            elif use_shotgun:
+                query, strategy = self.get_shotgun_query()
+                logging.info(f"PLAN: {strategy} | Query: {query}")
+                max_records = int(os.getenv("SRA_MAX_RECORDS", "100"))
             else:
                 query, strategy = self.formulate_strategy(use_broad_list=use_broad)
                 logging.info(f"PLAN: {strategy} | Query: {query}")
@@ -446,6 +505,12 @@ class AutonomousProspector:
                 retstart = page * max_records
                 if use_very_broad:
                     raw_ids = self.scout.search_very_broad(query, max_records=max_records, retstart=retstart)
+                elif use_shotgun:
+                    raw_ids = self.scout.search_random_metagenome(
+                        max_records=max_records,
+                        max_offset=int(os.getenv("SHOTGUN_MAX_OFFSET", "50000")),
+                    )
+                    break
                 else:
                     raw_ids = self.scout.search_wgs(query, max_records=max_records, retstart=retstart)
 
@@ -491,6 +556,7 @@ class AutonomousProspector:
             if best_ids:
                 new_discoveries = self.deep_mine(best_ids)
                 if new_discoveries:
+                    os.makedirs("data/raw_sequences", exist_ok=True)
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     fasta_path = f"data/raw_sequences/deep_hits_{timestamp}.fasta"
                     meta_path = f"data/raw_sequences/deep_hits_{timestamp}_metadata.csv"

@@ -150,6 +150,23 @@ class SRAScout:
         print(f"   [+] Found {len(id_list)} nucleotide IDs (broad scope).")
         return id_list
 
+    def search_random_metagenome(self, max_records=100, max_offset=50000):
+        """
+        Shotgun SRA: pull a random page of metagenome results (no wgs[Prop]).
+        Use after exhausting the usual-suspects (broad) query list.
+        Picks a random retstart in [0, max_offset] to get a random slice of NCBI.
+        """
+        import random
+        query = "metagenome"
+        # Random page: retstart in steps of max_records, capped by max_offset
+        max_page = max(0, max_offset // max_records)
+        page = random.randint(0, max_page) if max_page > 0 else 0
+        retstart = page * max_records
+        print(f"[*] Shotgun: random metagenome page (retstart={retstart})...")
+        id_list = self._search_nucleotide(query, max_records, retstart)
+        print(f"   [+] Found {len(id_list)} nucleotide IDs (shotgun).")
+        return id_list
+
     def fetch_and_mine(self, id_list):
         """
         Downloads DNA, translates to Protein (6 frames), and hunts for Cas13d.

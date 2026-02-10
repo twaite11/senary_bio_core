@@ -119,14 +119,17 @@ def run_bi_lobed_hepn_filter(
     structures_dir: str,
     references_dir: str,
     fasta_path: str,
-    tm_threshold: float = 0.4,
+    tm_threshold: float = 0.25,
     output_json: str = None,
 ) -> Dict[str, dict]:
     """
     For each PDB in structures_dir, compute TM-score vs Cas13 refs; check HEPN count from FASTA.
-    Returns {seq_id: {tm_score, bi_lobed_pass, hepn_pass, pass_overall}}.
+    Also computes functional criteria (domain TM, catalytic distance, linker charge, pLDDT dip)
+    for dashboard ranking. Returns {seq_id: {tm_score, bi_lobed_pass, hepn_pass, pass_overall, ...}}.
     """
     from Bio import SeqIO
+
+    from .functional_criteria import compute_functional_criteria, get_sequence_from_pdb_single_chain
 
     ref_dir = Path(references_dir)
     struct_dir = Path(structures_dir)
@@ -142,19 +145,37 @@ def run_bi_lobed_hepn_filter(
     if not ref_pdbs:
         print(f"[!] No reference PDBs in {references_dir}. Run run_tmscore download or add 5W1H.pdb, 6DTD.pdb, 6IV9.pdb.")
 
+    # Single longest chain per ref (so HEPN motifs are correct for domain TM)
+    ref_sequences = {}
+    ref_chain_ids = {}
+    for name, ref_path in ref_pdbs.items():
+        try:
+            seq, chain_id = get_sequence_from_pdb_single_chain(ref_path)
+            if seq and len(seq) > 100:
+                ref_sequences[name] = seq
+                ref_chain_ids[name] = chain_id
+        except Exception:
+            pass
+    refs_list = [
+        (name, ref_path, ref_sequences.get(name) or "", ref_chain_ids.get(name))
+        for name, ref_path in ref_pdbs.items()
+    ]
+
     seqs = {r.id: str(r.seq) for r in SeqIO.parse(fasta_path, "fasta")} if fasta_path.exists() else {}
 
-    # Map PDB stem -> seq_id (OmegaFold often names by first word of header)
+    # Map PDB stem -> seq_id. Prefer exact match so each PDB gets one result (no overwrite).
     query_pdbs = {}
     for pdb in struct_dir.glob("*.pdb"):
         stem = pdb.stem
-        # Match to FASTA id: try stem as-is, then first part before _ or space
-        for sid in seqs:
-            if sid == stem or stem.startswith(sid) or sid.startswith(stem.split("_")[0]):
-                query_pdbs[sid] = str(pdb.resolve())
-                break
-        else:
+        if stem in seqs:
             query_pdbs[stem] = str(pdb.resolve())
+        else:
+            for sid in seqs:
+                if sid == stem or stem.startswith(sid) or sid.startswith(stem.split("_")[0]):
+                    query_pdbs[sid] = str(pdb.resolve())
+                    break
+            else:
+                query_pdbs[stem] = str(pdb.resolve())
 
     results = {}
     for seq_id, pdb_path in query_pdbs.items():
@@ -176,6 +197,23 @@ def run_bi_lobed_hepn_filter(
             "pass_overall": pass_overall,
             **per_ref,
         }
+        # Functional criteria (soft metrics for dashboard); domain TM vs all refs, best used
+        try:
+            fc = compute_functional_criteria(
+                pdb_path,
+                seq,
+                refs_list,
+                compute_tm_score,
+            )
+            results[seq_id].update(fc)
+        except Exception as e:
+            if seq_id == list(query_pdbs.keys())[0]:
+                print(f"[!] Functional criteria warning for {seq_id}: {e}")
+            results[seq_id].update(
+                hepn1_tm=None, hepn2_tm=None, catalytic_distance_angstrom=None,
+                linker_net_charge=None, linker_plddt_mean=None, domain1_plddt_mean=None,
+                domain2_plddt_mean=None, plddt_dip_ok=None,
+            )
 
     if output_json:
         Path(output_json).parent.mkdir(parents=True, exist_ok=True)
@@ -190,7 +228,7 @@ def main():
     parser.add_argument("--structures-dir", default="data/structure_pipeline/structures/omegafold")
     parser.add_argument("--references-dir", default="data/structure_pipeline/references")
     parser.add_argument("--fasta", default="data/design/drift_variants.fasta")
-    parser.add_argument("--tm-threshold", type=float, default=0.4)
+    parser.add_argument("--tm-threshold", type=float, default=0.25)
     parser.add_argument("--output", default="data/structure_pipeline/structure_filter_results.json")
     args = parser.parse_args()
 
