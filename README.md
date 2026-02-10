@@ -212,7 +212,7 @@ Mining outputs: `data/raw_sequences/deep_hits_*.fasta` and `*_metadata.csv`. To 
 |------|---------|
 | **1. Mine Enzymes** | Autonomous Prospector: `python modules/mining/autonomous_prospector.py` (full-enzyme + optional CRISPR repeat requirement; saves `data/raw_sequences/deep_hits_*.fasta` + `*_metadata.csv` with SRA + repeat domains) |
 | | SRA Scout: `SRAScout().search_wgs(...)` → `fetch_and_mine` (full-enzyme ORF checks applied) |
-| | **SRA Magic-BLAST (no download):** `python scripts/run_sra_cas13_search.py` — Bacteria/Archaea WGS or METAGENOMIC; uses Magic-BLAST against SRA runs; 700–1400 aa, 2 HEPN, N/C intact; writes same `deep_hits_*.fasta` for structure pipeline. Requires [SRA Toolkit](https://ncbi.github.io/magicblast/cook/sra.html) (`magicblast` on PATH). |
+| | **SRA Diamond pipeline:** `python scripts/run_sra_cas13_search.py` — Bacteria/Archaea WGS or METAGENOMIC; 4-step workflow: (1) **Diamond** blastx (protein-space bait on downloaded reads), (2) **Hook** (extract hit + mate reads), (3) **Megahit** (assemble subset), (4) **Prodigal** + filter (700–1400 aa, 2 HEPN, N/C intact, CRISPR on contig). Writes `deep_hits_*.fasta` + metadata for structure pipeline. Requires on PATH: [SRA Toolkit](https://github.com/ncbi/sra-tools) (`fasterq-dump`), [Diamond](https://github.com/bbuchfink/diamond), [Megahit](https://github.com/voutcn/megahit), [Prodigal](https://github.com/hyattpd/Prodigal). |
 | **2. Family Grouping** | `python modules/mining/family_grouper.py` (ESM-2 homology, SN01_001 naming) |
 | **3. Specificity Filter** | `python modules/targeting/specificity_filter.py` |
 | **4. Matchmaker** | `python modules/matchmaker.py` |
