@@ -163,19 +163,35 @@ def run_bi_lobed_hepn_filter(
 
     seqs = {r.id: str(r.seq) for r in SeqIO.parse(fasta_path, "fasta")} if fasta_path.exists() else {}
 
-    # Map PDB stem -> seq_id. Prefer exact match so each PDB gets one result (no overwrite).
-    query_pdbs = {}
-    for pdb in struct_dir.glob("*.pdb"):
-        stem = pdb.stem
-        if stem in seqs:
-            query_pdbs[stem] = str(pdb.resolve())
+    # Robust 1:1 PDB <-> FASTA id mapping (no overwriting, no ambiguous prefix match).
+    sorted_pdbs = sorted(
+        [(p.stem, str(p.resolve())) for p in struct_dir.glob("*.pdb")],
+        key=lambda x: x[0],
+    )
+    sorted_sids = sorted(seqs.keys())
+
+    query_pdbs = {}  # seq_id -> pdb_path
+    if len(sorted_pdbs) == len(sorted_sids):
+        # Try exact stem match first (OmegaFold often names output by FASTA id)
+        for stem, path in sorted_pdbs:
+            if stem in seqs:
+                query_pdbs[stem] = path
+        if len(query_pdbs) == len(sorted_pdbs):
+            # All PDB stems matched FASTA ids
+            pass
         else:
-            for sid in seqs:
-                if sid == stem or stem.startswith(sid) or sid.startswith(stem.split("_")[0]):
-                    query_pdbs[sid] = str(pdb.resolve())
-                    break
-            else:
-                query_pdbs[stem] = str(pdb.resolve())
+            # Fallback: pair by sorted order (same count => same order as input FASTA)
+            query_pdbs = {sorted_sids[i]: sorted_pdbs[i][1] for i in range(len(sorted_sids))}
+    else:
+        # Different count: only exact stem match (no ambiguous prefix)
+        for stem, path in sorted_pdbs:
+            if stem in seqs:
+                query_pdbs[stem] = path
+        if len(query_pdbs) < len(sorted_pdbs) or len(query_pdbs) < len(sorted_sids):
+            print(
+                f"[*] Structure filter: {len(query_pdbs)} PDB–FASTA pairs (exact id match); "
+                f"{len(sorted_pdbs)} PDBs, {len(sorted_sids)} FASTA ids."
+            )
 
     results = {}
     for seq_id, pdb_path in query_pdbs.items():

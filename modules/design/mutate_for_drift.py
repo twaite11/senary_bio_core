@@ -24,7 +24,7 @@ AA = list("ACDEFGHIKLMNPQRSTVWY")
 
 
 def pairwise_identity(seq1: str, seq2: str) -> float:
-    """Global alignment identity (fraction of aligned positions that match)."""
+    """Global alignment identity: fraction of aligned positions that match (matches / aligned_length)."""
     # #region agent log
     log_path = os.path.join(os.getcwd(), ".cursor", "debug.log")
     try:
@@ -74,12 +74,12 @@ def pairwise_identity(seq1: str, seq2: str) -> float:
         if a is None:
             return 0.0
     matches = sum(1 for i, j in zip(a[0], a[1]) if i == j and i != "-")
-    length = max(len(seq1), len(seq2))
-    result = matches / length if length else 0.0
+    aligned_length = sum(1 for i, j in zip(a[0], a[1]) if i != "-" or j != "-")
+    result = matches / aligned_length if aligned_length else 0.0
     # #region agent log
     try:
         with open(log_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps({"id": "log_pairwise_exit", "timestamp": time.time() * 1000, "location": "mutate_for_drift.py:58", "message": "pairwise_identity exit", "data": {"result": result, "matches": matches, "length": length}, "runId": "debug", "hypothesisId": "A,B"}) + "\n")
+            f.write(json.dumps({"id": "log_pairwise_exit", "timestamp": time.time() * 1000, "location": "mutate_for_drift.py:58", "message": "pairwise_identity exit", "data": {"result": result, "matches": matches, "aligned_length": aligned_length}, "runId": "debug", "hypothesisId": "A,B"}) + "\n")
     except: pass
     # #endregion
     return result

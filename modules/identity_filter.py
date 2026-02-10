@@ -12,15 +12,16 @@ from Bio.Align import substitution_matrices
 
 
 def pairwise_identity(seq1: str, seq2: str) -> float:
-    """Global alignment identity (fraction of aligned positions that match)."""
+    """Global alignment identity: fraction of aligned positions that match (matches / aligned_length)."""
     aligner = Align.PairwiseAligner(mode="global", substitution_matrix=substitution_matrices.load("BLOSUM62"))
     alns = aligner.align(seq1, seq2)
     if not alns:
         return 0.0
     a = alns[0]
     matches = sum(1 for i, j in zip(a[0], a[1]) if i == j and i != "-")
-    length = max(len(seq1), len(seq2))
-    return matches / length if length else 0.0
+    # Aligned length = number of columns where at least one sequence has a residue (not a double-gap)
+    aligned_length = sum(1 for i, j in zip(a[0], a[1]) if i != "-" or j != "-")
+    return matches / aligned_length if aligned_length else 0.0
 
 
 def max_identity_to_refs(seq: str, ref_seqs: list) -> tuple:

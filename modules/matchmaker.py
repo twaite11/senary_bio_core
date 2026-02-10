@@ -1,16 +1,22 @@
 import pandas as pd
 from Bio import SeqIO
-import random
+import hashlib
 import os
 import sys
 
+# Optional: path to FASTA of fusion junction sequences (record.id = Fusion_Name)
+JUNCTION_FASTA_ENV = "JUNCTION_SEQUENCES_FASTA"
+
+
 class MasterMatchmaker:
-    def __init__(self, enzyme_fasta, target_file, disease_matrix_file=None):
+    def __init__(self, enzyme_fasta, target_file, disease_matrix_file=None, junction_fasta=None):
         self.enzyme_fasta = enzyme_fasta
         self.target_file = target_file
         self.disease_matrix_file = disease_matrix_file
+        self.junction_fasta = junction_fasta or os.environ.get(JUNCTION_FASTA_ENV, "").strip() or None
         self.results = []
         self.disease_map = {}
+        self._junction_cache = {}  # fusion_name -> (seq, source)
 
     def _load_enzymes(self):
         enzymes = []
@@ -76,10 +82,40 @@ class MasterMatchmaker:
             print(f"[!] Error reading file: {e}")
             return pd.DataFrame()
 
-    def _get_target_sequence(self, fusion_name):
-        # SIMULATION: 60nt Junction
-        bases = ['A', 'C', 'T', 'G']
-        return "".join(random.choice(bases) for _ in range(60))
+    def _load_junction_cache(self):
+        """Load fusion name -> sequence from optional FASTA (record.id = Fusion_Name)."""
+        if not self.junction_fasta or not os.path.exists(self.junction_fasta):
+            return
+        try:
+            for rec in SeqIO.parse(self.junction_fasta, "fasta"):
+                seq = str(rec.seq).replace("U", "T").upper().strip()
+                if len(seq) >= 30:
+                    self._junction_cache[rec.id.strip()] = (seq, "fasta")
+            if self._junction_cache:
+                print(f"[*] Loaded {len(self._junction_cache)} junction sequences from {self.junction_fasta}")
+        except Exception as e:
+            print(f"[!] Error loading junction FASTA {self.junction_fasta}: {e}")
+
+    def _get_target_sequence(self, fusion_name, row=None):
+        """Return (junction_sequence, source). source is 'provided' | 'fasta' | 'imputed'.
+        Uses: (1) CSV column Junction_Sequence/Junction_RNA if present, (2) FASTA by fusion id, (3) deterministic 60 nt from fusion name (reproducible)."""
+        # 1. From target row column (case-insensitive)
+        if row is not None and hasattr(row, "index"):
+            for col in ("Junction_Sequence", "Junction_RNA", "junction_sequence", "junction_rna"):
+                if col in row.index:
+                    val = row.get(col)
+                    if pd.notna(val) and str(val).strip():
+                        s = str(val).strip().replace("U", "T").upper()
+                        if len(s) >= 30:
+                            return s, "provided"
+        # 2. From preloaded FASTA cache
+        if fusion_name in self._junction_cache:
+            return self._junction_cache[fusion_name][0], self._junction_cache[fusion_name][1]
+        # 3. Deterministic 60 nt from fusion name (reproducible; not biologically real)
+        h = hashlib.sha256(fusion_name.encode("utf-8")).digest()
+        bases = ["A", "C", "T", "G"]
+        seq = "".join(bases[(b % 4)] for b in h[:30]) * 2  # 60 nt
+        return seq, "imputed"
 
     def run_matching(self):
         enzymes = self._load_enzymes()
@@ -92,6 +128,8 @@ class MasterMatchmaker:
         if targets_df.empty or not enzymes:
             print("[!] Aborting: Missing Data.")
             return
+
+        self._load_junction_cache()
 
         print(f"[*] Screening {len(enzymes)} Enzymes against top 50 Targets...")
         subset = targets_df.head(50)
@@ -109,19 +147,22 @@ class MasterMatchmaker:
             else:
                 disease = self.disease_map.get(target_name, "Unknown")
             
-            rna_seq = self._get_target_sequence(target_name)
+            rna_seq, junction_source = self._get_target_sequence(target_name, row)
             
             for enzyme in enzymes:
                 score, cut_sites = self._calculate_cut_efficiency(enzyme, rna_seq)
                 
                 if score > 0:
+                    preview = rna_seq[:15] + "..." if len(rna_seq) > 15 else rna_seq
                     self.results.append({
                         'Target_Fusion': target_name,
                         'Associated_Disease': disease,
                         'Patient_Count': patient_count,
                         'Enzyme_Variant': enzyme['id'],
                         'Valid_Cut_Sites': score,
-                        'Junction_Sequence_Sim': rna_seq[:15] + "..."
+                        'Junction_Sequence_Preview': preview,
+                        'Junction_Source': junction_source,
+                        'Junction_Sequence_Sim': preview,  # backward compat
                     })
 
     def _calculate_cut_efficiency(self, enzyme, rna_seq):
