@@ -22,6 +22,34 @@ from modules.mining.deep_miner_utils import DeepEngine
 # Standard amino acids
 AA = list("ACDEFGHIKLMNPQRSTVWY")
 
+# HEPN catalytic motif (same regex used throughout the codebase)
+HEPN_REGEX = re.compile(r"R.{4,6}H")
+
+# Padding around each HEPN motif: these residues position the catalytic
+# R and H in 3D and must not be mutated either.
+HEPN_PADDING = 5  # residues on each side of the motif
+
+
+def get_protected_positions(sequence: str, hepn_padding: int = HEPN_PADDING) -> set:
+    """
+    Return 0-based positions that must NOT be mutated.
+
+    Protected regions:
+    1. HEPN catalytic motifs (R.{4,6}H) ± hepn_padding residues on each side.
+       These include the active-site R and H, the inter-motif spacer, and the
+       structural core residues that position the catalytic pair.
+
+    All other positions (surface loops, peripheral helices, linker between
+    HEPN domains, REC lobe) are available for mutation.
+    """
+    protected: set = set()
+    seq_len = len(sequence)
+    for m in HEPN_REGEX.finditer(sequence):
+        start = max(0, m.start() - hepn_padding)
+        end = min(seq_len, m.end() + hepn_padding)
+        protected.update(range(start, end))
+    return protected
+
 
 def pairwise_identity(seq1: str, seq2: str) -> float:
     """Global alignment identity: fraction of aligned positions that match (matches / aligned_length)."""
@@ -89,16 +117,26 @@ def max_identity_to_refs(seq: str, ref_seqs: list) -> float:
     return max(pairwise_identity(seq, r) for r in ref_seqs) if ref_seqs else 0.0
 
 
-def propose_mutations(sequence: str, num_mutants: int = 5, num_sites: int = 3):
-    """Propose num_mutants variants, each with up to num_sites random AA substitutions."""
+def propose_mutations(sequence: str, num_mutants: int = 5, num_sites: int = 3,
+                      protected: set | None = None):
+    """
+    Propose num_mutants variants, each with up to num_sites random AA substitutions.
+    Positions in *protected* (0-based) are never mutated (HEPN motifs + padding).
+    If protected is None it is computed automatically from the sequence.
+    """
+    if protected is None:
+        protected = get_protected_positions(sequence)
     seq = list(sequence)
     L = len(seq)
+    mutable_positions = [i for i in range(L) if i not in protected]
+    if not mutable_positions:
+        return []
     mutants = []
     seen = set()
     for _ in range(num_mutants * 4):  # allow retries
         if len(mutants) >= num_mutants:
             break
-        positions = random.sample(range(L), min(num_sites, L)) if L else []
+        positions = random.sample(mutable_positions, min(num_sites, len(mutable_positions)))
         mut = seq[:]
         desc = []
         for pos in positions:
@@ -116,11 +154,16 @@ def propose_mutations(sequence: str, num_mutants: int = 5, num_sites: int = 3):
     return mutants
 
 
-def suggest_trans_cleavage_mutations(seq: str, ref_name: str, prompt_path: str, max_len_preview: int = 400):
+def suggest_trans_cleavage_mutations(seq: str, ref_name: str, prompt_path: str,
+                                     max_len_preview: int = 400,
+                                     protected: set | None = None):
     """
     Call Gemini with trans-cleavage prompt; return list of (mut_seq, desc) from suggested mutations.
     Returns [] if no API key or parse failure.
+    Any suggestion that lands on a *protected* position (HEPN motif + padding) is silently dropped.
     """
+    if protected is None:
+        protected = get_protected_positions(seq)
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         return []
@@ -134,7 +177,17 @@ def suggest_trans_cleavage_mutations(seq: str, ref_name: str, prompt_path: str, 
     if not path.exists():
         return []
     prompt_text = path.read_text(encoding="utf-8")
-    prompt_text = prompt_text.replace("{ref_name}", ref_name).replace("{seq_preview}", seq[:max_len_preview])
+    # Tell Gemini which positions are off-limits
+    protected_ranges = _protected_ranges_str(seq)
+    prompt_text = (
+        prompt_text
+        .replace("{ref_name}", ref_name)
+        .replace("{seq_preview}", seq[:max_len_preview])
+    )
+    prompt_text += (
+        f"\n\nIMPORTANT: The following 1-based position ranges are PROTECTED (HEPN catalytic motifs + "
+        f"structural padding) and MUST NOT be mutated: {protected_ranges}\n"
+    )
     try:
         response = model.generate_content(prompt_text)
         text = (response.text or "").strip()
@@ -155,6 +208,9 @@ def suggest_trans_cleavage_mutations(seq: str, ref_name: str, prompt_path: str, 
             pos_0 = int(pos_1) - 1
             if pos_0 < 0 or pos_0 >= len(seq_list) or seq_list[pos_0] != wild:
                 continue
+            # Reject if Gemini suggested a protected position anyway
+            if pos_0 in protected:
+                continue
             mut = seq_list[:]
             mut[pos_0] = mutant
             mut_str = "".join(mut)
@@ -163,6 +219,16 @@ def suggest_trans_cleavage_mutations(seq: str, ref_name: str, prompt_path: str, 
         return mut_seqs
     except (json.JSONDecodeError, ValueError, KeyError, AttributeError) as e:
         return []
+
+
+def _protected_ranges_str(sequence: str) -> str:
+    """Format protected HEPN regions as human-readable 1-based ranges for the LLM prompt."""
+    ranges = []
+    for m in HEPN_REGEX.finditer(sequence):
+        start_1 = max(1, m.start() - HEPN_PADDING + 1)
+        end_1 = min(len(sequence), m.end() + HEPN_PADDING)
+        ranges.append(f"{start_1}-{end_1}")
+    return ", ".join(ranges) if ranges else "none"
 
 
 def main():
@@ -339,12 +405,20 @@ def main():
         else:
             _, closest_ref = engine.score_candidate_with_ref(seq)
 
+        # Compute protected positions once per sequence (HEPN catalytic motifs + padding)
+        protected = get_protected_positions(seq)
+        if protected:
+            print(f"  [Shield] {rec.id}: {len(protected)} positions protected "
+                  f"({len(list(HEPN_REGEX.finditer(seq)))} HEPN motif(s) + {HEPN_PADDING}-AA padding)")
+
         mutants = []
         if args.use_trans_cleavage_prompt and os.getenv("GEMINI_API_KEY"):
-            suggested = suggest_trans_cleavage_mutations(seq, closest_ref, args.trans_cleavage_prompt)
+            suggested = suggest_trans_cleavage_mutations(seq, closest_ref, args.trans_cleavage_prompt,
+                                                        protected=protected)
             mutants.extend(suggested)
         if len(mutants) < args.num_mutants_per_seq:
-            mutants.extend(propose_mutations(seq, num_mutants=args.num_mutants_per_seq - len(mutants), num_sites=args.num_mutations))
+            mutants.extend(propose_mutations(seq, num_mutants=args.num_mutants_per_seq - len(mutants),
+                                             num_sites=args.num_mutations, protected=protected))
 
         added_any = False
         for mut_seq, desc in mutants[: args.num_mutants_per_seq]:

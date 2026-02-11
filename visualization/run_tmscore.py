@@ -11,13 +11,17 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
-REF_PDBS = {
+# Legacy baseline – always downloaded if nothing else is present.
+_LEGACY_REFS = {
     "cas13a": "5W1H",
     "cas13b": "6DTD",
     "cas13d": "6IV9",  # RfxCas13d
 }
 
 RCSB_URL = "https://files.rcsb.org/download/{pdb}.pdb"
+
+# Catalog written by download_cas13_references.py (subtype info)
+_CATALOG_NAME = "cas13_reference_catalog.json"
 
 
 def download_reference(pdb_id: str, out_dir: str) -> str:
@@ -29,6 +33,35 @@ def download_reference(pdb_id: str, out_dir: str) -> str:
     url = RCSB_URL.format(pdb=pdb_id.upper())
     urllib.request.urlretrieve(url, str(out_path))
     return str(out_path)
+
+
+def discover_all_references(ref_dir: Path) -> dict:
+    """
+    Build {label: pdb_id} from every .pdb in ref_dir.
+    If a catalog JSON exists (from download_cas13_references.py), use its
+    subtype field for readable labels.  Otherwise fall back to the PDB stem.
+    """
+    catalog_path = ref_dir / _CATALOG_NAME
+    subtype_map: dict = {}
+    if catalog_path.exists():
+        try:
+            with open(catalog_path) as f:
+                for entry in json.load(f):
+                    pid = entry.get("pdb_id", "").upper()
+                    sub = entry.get("subtype", "Cas13")
+                    if pid:
+                        subtype_map[pid] = sub
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    ref_pdbs: dict = {}
+    for pdb_file in sorted(ref_dir.glob("*.pdb")):
+        pdb_id = pdb_file.stem.upper()
+        subtype = subtype_map.get(pdb_id, pdb_id)
+        # Make label unique if multiple PDBs share a subtype
+        label = f"{subtype}_{pdb_id}".lower()
+        ref_pdbs[label] = pdb_id
+    return ref_pdbs
 
 
 def run_usalign(pdb1: str, pdb2: str) -> Optional[float]:
@@ -100,17 +133,25 @@ def main():
     ref_dir = Path(args.references_dir)
     ref_dir.mkdir(parents=True, exist_ok=True)
 
+    # Ensure at least the legacy 3 are present (backwards-compat)
     if not args.skip_download:
-        print("[*] Downloading reference structures...")
-        for name, pdb_id in REF_PDBS.items():
+        print("[*] Ensuring baseline reference structures are present...")
+        for name, pdb_id in _LEGACY_REFS.items():
             download_reference(pdb_id, str(ref_dir))
-            print(f"   [+] {pdb_id}.pdb")
+
+    # Discover ALL .pdb files in the references dir (curated + downloaded)
+    REF_PDBS = discover_all_references(ref_dir)
+    if not REF_PDBS:
+        print(f"[!] No reference PDBs found in {ref_dir}. Run download_cas13_references.py first.")
+        return
+    print(f"[*] Using {len(REF_PDBS)} reference structures from {ref_dir}")
 
     ref_paths = {k: str(ref_dir / f"{v}.pdb") for k, v in REF_PDBS.items()}
-    for k, p in ref_paths.items():
-        if not os.path.exists(p):
-            print(f"[!] Reference not found: {p}")
-            return
+    missing = [k for k, p in ref_paths.items() if not os.path.exists(p)]
+    if missing:
+        for k in missing:
+            print(f"[!] Reference not found: {ref_paths[k]}")
+        return
 
     # Collect predicted PDBs (OmegaFold: flat *.pdb in output dir)
     struct_dir = Path(args.structures_dir)
