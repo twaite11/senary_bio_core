@@ -9,8 +9,15 @@ Workflow:
 5.  BUILD: Assemble ONLY the extracted reads using Megahit.
 6.  HUNT:  Predict genes (Prodigal) and filter for valid Cas13 candidates.
 
+Updates:
+- Discovery mode: Relaxed filters (MIN_AA 500, MAX_AA 1800; MIN_HEPN_COUNT 1; accepts partials).
+- N-term: 'Starts with M' check disabled by default (require_m=False); accepts partial genes.
+- DEBUG: Prints raw vs filtered protein counts when all proteins are filtered out.
+- hit_type: Outputs "System" (CRISPR on contig) vs "Orphan"; both accepted.
+- seqtk: Uses seqtk for read extraction when available, else Python fallback.
+
 Requirements:
-    - Conda packages: sra-tools, diamond, megahit, prodigal, biopython
+    - Conda packages: sra-tools, diamond, megahit, prodigal, biopython, seqtk (optional)
 """
 from __future__ import annotations
 
@@ -20,6 +27,7 @@ import shutil
 import subprocess
 import tempfile
 import argparse
+import csv
 from pathlib import Path
 from datetime import datetime
 from typing import List, Tuple, Optional, Dict, Set
@@ -38,25 +46,29 @@ DEFAULT_SRA_TERM = (
     'AND metagenomic[LibrarySource]'
 )
 
-# Filters
-MIN_AA = 700
-MAX_AA = 1500
-HEPN_COUNT_EXACT = 2
+# Filters (relaxed for discovery: catch partials and smaller fragments)
+MIN_AA = 500
+MAX_AA = 1800
+MIN_HEPN_COUNT = 1  # Keep at 1 to catch partials
 CRISPR_MIN_LEN = 20
 CRISPR_MIN_COUNT = 2
 CRISPR_FLANK_BP = 8000
 
 # Optimization
-SPOT_CHECK_READS = 3_000_000  # Number of reads to stream for initial check
+SPOT_CHECK_READS = 2_000_000  # Number of reads to stream for initial check
 
 # --- Helper Functions ---
-def passes_n_term(protein: str, require_m: bool = True) -> bool:
-    if not protein: return False
+def passes_n_term(protein: str, require_m: bool = False) -> bool:
+    """Discovery mode: default require_m=False to accept partial genes."""
+    if not protein:
+        return False
     return protein.startswith("M") if require_m else True
 
-def passes_c_term(protein: str, min_tail: int = 15) -> bool:
+def passes_c_term(protein: str, min_tail: int = 10) -> bool:
+    """Require at least one HEPN; for discovery mode tail check is lenient."""
     matches = list(HEPN_REGEX.finditer(protein))
-    if not matches: return False
+    if not matches:
+        return False
     last_hepn_end = matches[-1].end()
     return (len(protein) - last_hepn_end) >= min_tail
 
@@ -80,31 +92,32 @@ def fetch_sra_run_accessions(term: str, max_records: int = 1000, page_size: int 
     """Fetch SRA run accessions with pagination until we have max_records or no more results."""
     print(f"[*] Querying SRA for: {term}")
     run_ids: List[str] = []
+    seen_ids: Set[str] = set()
     retstart = 0
     try:
         while len(run_ids) < max_records:
-            fetch_max = min(page_size, max_records - len(run_ids))
-            h = Entrez.esearch(db="sra", term=term, retmax=fetch_max, retstart=retstart)
+            h = Entrez.esearch(db="sra", term=term, retmax=page_size, retstart=retstart)
             rec = Entrez.read(h)
             h.close()
             id_list = rec.get("IdList", [])
             if not id_list:
                 break
-            print(f"[*] Fetching details for {len(id_list)} experiments (retstart={retstart})...")
+            print(f"[*] Fetching details for {len(id_list)} experiments (retstart={retstart}, found={len(run_ids)}/{max_records})...")
             h = Entrez.efetch(db="sra", id=",".join(id_list), retmode="xml")
             batch = _parse_runs_from_xml(h)
             h.close()
             for r in batch:
-                if r not in run_ids:
+                if r not in seen_ids:
+                    seen_ids.add(r)
                     run_ids.append(r)
-            if len(run_ids) >= max_records:
-                break
+                    if len(run_ids) >= max_records:
+                        break
             retstart += len(id_list)
-            if len(id_list) < fetch_max:
+            if len(id_list) < page_size:
                 break
     except Exception as e:
         print(f"[!] SRA Error: {e}")
-    return list(dict.fromkeys(run_ids))[:max_records]
+    return run_ids[:max_records]
 
 # --- Pipeline Components ---
 
@@ -117,7 +130,8 @@ def spot_check_sra(run_id: str, db_path: str) -> bool:
     dump_cmd = ["fastq-dump", "-X", str(SPOT_CHECK_READS), "-Z", "--fasta", "0", run_id]
     diamond_cmd = [
         "diamond", "blastx", "-d", db_path, "-q", "-", "--quiet",
-        "-f", "6", "qseqid", "--evalue", "1e-5", "--max-target-seqs", "1"
+        "-f", "6", "qseqid", "--evalue", "1e-5", "--max-target-seqs", "1",
+        "--sensitive"
     ]
     
     try:
@@ -139,9 +153,9 @@ def spot_check_sra(run_id: str, db_path: str) -> bool:
         return True
 
 def dump_sra_run(run_id: str, out_dir: Path) -> Tuple[List[str], bool]:
-    """Download SRA to FASTQ."""
+    """Download SRA to FASTQ. Uses -t/--temp in out_dir for cleanup."""
     print(f"   [Download] Fetching full {run_id}...")
-    cmd = ["fasterq-dump", run_id, "-O", str(out_dir), "-e", "8", "--split-files"]
+    cmd = ["fasterq-dump", run_id, "-O", str(out_dir), "-t", str(out_dir), "-e", "8", "--split-files", "--force"]
     try:
         subprocess.run(cmd, check=True, timeout=7200, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         files = list(out_dir.glob(f"{run_id}*.fastq"))
@@ -201,21 +215,29 @@ def _read_id_to_base(read_id: str) -> str:
 
 
 def extract_reads(fastq_paths: List[str], hit_ids_file: str, out_r1: str, out_r2: Optional[str]):
-    """Extract hit reads + their mates (paired-end rescue) by base ID; keeps both R1 and R2 for any hit."""
-    # Build set of base IDs that had a hit (so we keep BOTH mates for any hit)
+    """Extract hit reads + their mates (paired-end rescue). Tries seqtk if available, else Python by base ID."""
+    use_seqtk = shutil.which("seqtk") is not None
+    if use_seqtk:
+        try:
+            Path(out_r1).parent.mkdir(parents=True, exist_ok=True)
+            with open(out_r1, "w") as f:
+                subprocess.run(["seqtk", "subseq", fastq_paths[0], hit_ids_file], stdout=f, check=True)
+            if len(fastq_paths) > 1 and out_r2:
+                with open(out_r2, "w") as f:
+                    subprocess.run(["seqtk", "subseq", fastq_paths[1], hit_ids_file], stdout=f, check=True)
+            return
+        except subprocess.CalledProcessError:
+            pass  # Fallback to Python
+
     bases_with_hits: Set[str] = set()
     with open(hit_ids_file) as f:
         for line in f:
             clean_id = line.strip().split()[0]
             if clean_id:
                 bases_with_hits.add(_read_id_to_base(clean_id))
-
-    # Write expanded ID list for seqtk (both mates per hit)
     if not bases_with_hits:
         return
-    # seqtk subseq expects one ID per line; we need to pass concrete read IDs.
-    # FASTQ headers vary (SRR123.1 vs SRR123/1), so we can't know exact IDs without scanning.
-    # So we always use Python fallback for correct mate expansion: keep read if its base is in bases_with_hits.
+
     def filter_fq(in_fq: str, out_fq: str) -> None:
         Path(out_fq).parent.mkdir(parents=True, exist_ok=True)
         with open(in_fq) as fin, open(out_fq, "w") as fout:
@@ -236,7 +258,8 @@ def extract_reads(fastq_paths: List[str], hit_ids_file: str, out_r1: str, out_r2
         filter_fq(fastq_paths[1], out_r2)
 
 def run_megahit(r1: str, r2: Optional[str], out_dir: str, threads: int) -> Optional[str]:
-    cmd = ["megahit", "-o", out_dir, "-t", str(threads), "--min-contig-len", "1000"]
+    # --k-min 21 helps with lower coverage assemblies
+    cmd = ["megahit", "-o", out_dir, "-t", str(threads), "--min-contig-len", "800", "--k-min", "21"]
     if r2: cmd.extend(["-1", r1, "-2", r2])
     else: cmd.extend(["-r", r1])
     
@@ -248,42 +271,40 @@ def run_megahit(r1: str, r2: Optional[str], out_dir: str, threads: int) -> Optio
     except subprocess.CalledProcessError:
         return None
 
-def run_prodigal_and_filter(contigs_path: str, out_base: Path) -> List[Tuple]:
+def run_prodigal_and_filter(contigs_path: str, out_base: Path) -> Tuple[List[Tuple], int]:
+    """Returns (candidates, raw_protein_count). Candidates: (rec.id, prot_seq, repeats, hit_type)."""
     faa = out_base.with_suffix(".faa")
     gff = out_base.with_suffix(".gff")
     try:
         subprocess.run(["prodigal", "-i", contigs_path, "-a", str(faa), "-o", str(gff), "-p", "meta", "-q"], check=True)
     except subprocess.CalledProcessError:
-        return []
+        return [], 0
 
     candidates = []
     contigs = {rec.id: str(rec.seq).upper() for rec in SeqIO.parse(contigs_path, "fasta")}
+    raw_proteins = list(SeqIO.parse(faa, "fasta"))
+    raw_count = len(raw_proteins)
 
-    for rec in SeqIO.parse(faa, "fasta"):
+    for rec in raw_proteins:
         prot_seq = str(rec.seq)
         if not (MIN_AA <= len(prot_seq) <= MAX_AA):
-            print(f"   [Filter] {rec.id}: filtered out - length {len(prot_seq)} aa not in {MIN_AA}-{MAX_AA}")
             continue
         hepn_count = len(list(HEPN_REGEX.finditer(prot_seq)))
-        if hepn_count != HEPN_COUNT_EXACT:
-            print(f"   [Filter] {rec.id}: filtered out - HEPN count {hepn_count} (required {HEPN_COUNT_EXACT})")
+        if hepn_count < MIN_HEPN_COUNT:
             continue
-        if not passes_n_term(prot_seq):
-            print(f"   [Filter] {rec.id}: filtered out - missing N-term Met")
+        if not passes_n_term(prot_seq, require_m=False):
             continue
-        if not passes_c_term(prot_seq):
-            print(f"   [Filter] {rec.id}: filtered out - insufficient C-term tail after last HEPN")
+        if not passes_c_term(prot_seq, min_tail=10):
             continue
+        repeats: List[str] = []
+        hit_type = "Orphan"
         contig_id = "_".join(rec.id.rsplit("_", 1)[:-1])
-        if contig_id not in contigs:
-            print(f"   [Filter] {rec.id}: filtered out - contig {contig_id} not found")
-            continue
-        repeats = _find_repeats(contigs[contig_id])
-        if not repeats:
-            print(f"   [Filter] {rec.id}: filtered out - no CRISPR repeat on contig")
-            continue
-        candidates.append((rec.id, prot_seq, repeats))
-    return candidates
+        if contig_id in contigs:
+            repeats = _find_repeats(contigs[contig_id])
+            if repeats:
+                hit_type = "System"
+        candidates.append((rec.id, prot_seq, repeats, hit_type))
+    return candidates, raw_count
 
 def _find_repeats(dna: str) -> List[str]:
     """Find CRISPR-like tandem (non-overlapping) repeats: same motif repeated >= min_count times in a row."""
@@ -338,18 +359,27 @@ def process_single_run(sra_id: str, db_path: str, threads: int) -> List[Tuple]:
         # 5. Build
         asm_dir = temp_dir / "megahit_out"
         contigs_file = run_megahit(r1_sub, r2_sub, str(asm_dir), threads=threads)
-        if not contigs_file: return []
-        
+        if not contigs_file:
+            print(f"   [Warn] {sra_id}: Assembly failed (0 contigs).")
+            return []
+
         # 6. Hunt
-        candidates = run_prodigal_and_filter(contigs_file, temp_dir / "genes")
-        for cid, seq, crispr in candidates:
-            results.append((sra_id, cid, seq, crispr))
-            
+        candidates, raw_count = run_prodigal_and_filter(contigs_file, temp_dir / "genes")
+        if raw_count > 0 and len(candidates) == 0:
+            print(f"   [Debug] {sra_id}: Assembled {raw_count} proteins, but ALL were filtered out. (Check filters?)")
+        for cid, seq, crispr, h_type in candidates:
+            results.append((sra_id, cid, seq, crispr, h_type))
+
     except Exception as e:
         print(f"   [Error] {sra_id}: {e}")
     finally:
-        # Always remove temp (SRR dumps, Diamond output, Megahit dir) after bait/hook/build/hunt
         shutil.rmtree(temp_dir, ignore_errors=True)
+        try:
+            for stray in Path.cwd().glob(f"{sra_id}*"):
+                if stray.is_file() and stray.suffix in (".sra", ".fastq"):
+                    stray.unlink()
+        except Exception:
+            pass
 
     return results
 
@@ -359,14 +389,18 @@ def mine_sra(sra_list: List[str], ref_fasta: str, out_dir: str, workers: int, th
     root = Path(out_dir)
     root.mkdir(parents=True, exist_ok=True)
     db_path = build_diamond_db(ref_fasta, str(root / "cas13_ref"))
-    
-    import csv as csv_module
-    total_hits = 0
-    output_created = False
-    out_fa_path = None
-    out_csv_path = None
 
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_fa_path = root / f"deep_hits_{timestamp}.fasta"
+    out_csv_path = root / f"deep_hits_{timestamp}_metadata.csv"
+    with open(out_csv_path, "w", newline="", encoding="utf-8") as fc:
+        w = csv.writer(fc)
+        w.writerow(["sequence_id", "sra_accession", "repeat_domains", "hit_type", "score"])
+    open(out_fa_path, "a").close()
+
+    total_hits = 0
     print(f"[*] Starting mining with {workers} workers ({threads_per_worker} threads each)...")
+    print(f"[*] Results will be streamed to: {out_fa_path}")
 
     with ProcessPoolExecutor(max_workers=workers) as executor:
         futures = {executor.submit(process_single_run, sid, db_path, threads_per_worker): sid for sid in sra_list}
@@ -376,32 +410,21 @@ def mine_sra(sra_list: List[str], ref_fasta: str, out_dir: str, workers: int, th
             try:
                 res = future.result()
                 if res:
-                    print(f"[*] {sid}: Found {len(res)} candidates! Saving incrementally...")
-                    if not output_created:
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        out_fa_path = root / f"deep_hits_{timestamp}.fasta"
-                        out_csv_path = root / f"deep_hits_{timestamp}_metadata.csv"
-                        with open(out_csv_path, "w", newline="", encoding="utf-8") as fc:
-                            w = csv_module.writer(fc)
-                            w.writerow(["sequence_id", "sra_accession", "repeat_domains", "score"])
-                        output_created = True
-
+                    print(f"[*] {sid}: Found {len(res)} candidates! Saving immediately...")
                     with open(out_fa_path, "a") as fa, open(out_csv_path, "a", newline="", encoding="utf-8") as fc:
-                        w = csv_module.writer(fc)
-                        for run, cid, seq, repeats in res:
-                            seq_id = f"Cas13_{cid}_{total_hits}" if not cid.startswith("Cas13_") else cid
+                        w = csv.writer(fc)
+                        for idx, (run, cid, seq, repeats, h_type) in enumerate(res):
+                            seq_id = f"Cas13_{cid}_{total_hits + idx}" if not cid.startswith("Cas13_") else cid
                             fa.write(f">{seq_id}\n{seq}\n")
                             repeat_domains = "|".join(repeats[:3]) if repeats else ""
-                            w.writerow([seq_id, run, repeat_domains, "0"])
-                            print(f"   [PASS] Candidate {seq_id} passed all requirements and written to {out_fa_path}")
-                            total_hits += 1
+                            w.writerow([seq_id, run, repeat_domains, h_type, "0"])
+                    total_hits += len(res)
                 else:
-                    print(f"[*] {sid}: No hits.")
+                    print(f"[*] {sid}: Finished. No candidates passing filters.")
             except Exception as e:
                 print(f"[!] {sid} worker failed: {e}")
 
-    if output_created:
-        print(f"\n[DONE] Saved {total_hits} hits to {out_fa_path}")
+    print(f"\n[DONE] Processed all runs. Total unique hits saved: {total_hits}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Cas13 SRA Miner")

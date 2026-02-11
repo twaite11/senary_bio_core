@@ -56,6 +56,40 @@ class SRAScout:
             print(f"[!] Nucleotide search error: {e}")
             return []
 
+    # Fixed query for exhaustive mining: all bacteria/archaea WGS (and metagenomic) assembled contigs
+    EXHAUSTIVE_WGS_TERM = (
+        "(txid2[ORGN] OR txid2157[ORGN] OR txid408169[ORGN] OR txid48479[ORGN]) "
+        "AND (wgs[Prop] OR metagenomic[Title])"
+    )
+
+    def get_exhaustive_search_count(self):
+        """Return total number of nucleotide IDs matching the exhaustive WGS/metagenome query (for progress)."""
+        try:
+            handle = Entrez.esearch(
+                db="nucleotide",
+                term=self.EXHAUSTIVE_WGS_TERM,
+                retmax=0,
+            )
+            record = Entrez.read(handle)
+            handle.close()
+            return int(record.get("Count", 0))
+        except Exception as e:
+            print(f"[!] Nucleotide count error: {e}")
+            return 0
+
+    def search_exhaustive_wgs(self, max_records=100, retstart=0):
+        """
+        Search NCBI Nucleotide with a single fixed query: bacteria/archaea + WGS or metagenomic.
+        Use for exhaustive contig mining (paginate with retstart=0, max_records, 2*max_records, ...).
+        """
+        if retstart == 0:
+            print(f"[*] Exhaustive search: '{self.EXHAUSTIVE_WGS_TERM[:60]}...'")
+        else:
+            print(f"[*] Exhaustive search (page at retstart={retstart})...")
+        id_list = self._search_nucleotide(self.EXHAUSTIVE_WGS_TERM, max_records, retstart)
+        print(f"   [+] Found {len(id_list)} nucleotide ID(s) (bacteria/archaea WGS/metagenome).")
+        return id_list
+
     def search_bioproject(self, environment_query, max_projects=10):
         """
         Search BioProject for metagenome studies (extremophile environments).

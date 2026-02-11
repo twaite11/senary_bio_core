@@ -111,6 +111,42 @@ class DeepEngine:
         score, _ = self.score_candidate_with_ref(candidate_seq)
         return score
 
+    def score_candidates_batch(self, sequences, batch_size=32):
+        """
+        Score multiple sequences in batches (faster on GPU/CPU than one-by-one).
+        Returns list of float scores, same length as sequences; 0.0 for short/invalid.
+        """
+        if not sequences:
+            return []
+        # Filter short; we'll return 0.0 for them
+        valid_seqs = []
+        valid_indices = []
+        for i, s in enumerate(sequences):
+            s = str(s).strip()
+            if len(s) < 300:
+                continue
+            valid_seqs.append(s[:1000])
+            valid_indices.append(i)
+        if not valid_seqs:
+            return [0.0] * len(sequences)
+        embeddings, _ = self.get_embeddings_batch(valid_seqs, max_len=1000, batch_size=batch_size)
+        if embeddings is None:
+            return [0.0] * len(sequences)
+        scores_by_valid_idx = []
+        for j in range(embeddings.size(0)):
+            cand_vec = embeddings[j : j + 1]
+            best = 0.0
+            for ref_vec in self.ref_vectors:
+                sim = torch.nn.functional.cosine_similarity(ref_vec, cand_vec).item()
+                if sim > best:
+                    best = sim
+            scores_by_valid_idx.append(best)
+        # Map back to original indices
+        result = [0.0] * len(sequences)
+        for k, idx in enumerate(valid_indices):
+            result[idx] = scores_by_valid_idx[k]
+        return result
+
     def score_candidate_with_ref(self, candidate_seq):
         """Returns (max_similarity, ref_name) for closest reference (RfxCas13d, PspCas13a, etc.)."""
         if len(candidate_seq) < 300:
@@ -196,3 +232,33 @@ class NeighborhoodWatch:
                 else:
                     seen[chunk] = 1
         return repeats
+
+    def get_repeat_regions(self, dna_sequence):
+        """
+        Return nucleotide (start, end) for each CRISPR repeat array on the contig.
+        Used to require CRISPR within N kb upstream/downstream of the ORF (e.g. 10 kb).
+        """
+        seq_str = str(dna_sequence)
+        length = len(seq_str)
+        if length < 400:
+            return []
+
+        min_repeats = 3
+        if length < 1500:
+            min_repeats = 2
+
+        regions = []
+        for chunk_size in (24, 28, 32):
+            # seen[chunk] = list of start positions (so we can get span)
+            seen = {}
+            for i in range(0, length - chunk_size):
+                chunk = seq_str[i : i + chunk_size]
+                if chunk not in seen:
+                    seen[chunk] = []
+                seen[chunk].append(i)
+            for chunk, positions in seen.items():
+                if len(positions) >= min_repeats:
+                    start_nt = min(positions)
+                    end_nt = max(positions) + chunk_size
+                    regions.append((start_nt, end_nt))
+        return regions

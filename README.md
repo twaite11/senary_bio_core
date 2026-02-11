@@ -99,11 +99,12 @@ Run InterProScan on your 2–3 HEPN FASTA and pass the resulting `domains.json` 
 | **Motif table** | Start, End, Length, and sequence for each identified HEPN motif |
 | **3D viewer** | Interactive OmegaFold structure (3Dmol.js) with domain coloring as in the table above |
 
-### Pipeline Commands
+**From exhaustive prospector to dashboard:** After running with `EXHAUSTIVE_MODE=1`, use the same 2–3 HEPN filter and structure pipeline so candidates appear in the dashboard (folded structures):
 
 ```bash
-# 1. Filter to 2-3 HEPN sequences
-python visualization/filter_23_hepn.py
+# 0. (Optional) Exhaustive mining already wrote data/raw_sequences/deep_hits_*.fasta
+# 1. Filter to 2-3 HEPN sequences (input: latest deep_hits or fam_fasta)
+python visualization/filter_23_hepn.py --input data/raw_sequences/deep_hits_YYYYMMDD_HHMMSS.fasta --output data/structure_pipeline/input_2-3_hepn.fasta
 
 # 2. Run OmegaFold (PyTorch; works on RunPod, local GPU)
 python visualization/run_omegafold.py --omegafold-repo /path/to/OmegaFold
@@ -211,6 +212,7 @@ Mining outputs: `data/raw_sequences/deep_hits_*.fasta` and `*_metadata.csv`. To 
 | Step | Command |
 |------|---------|
 | **1. Mine Enzymes** | Autonomous Prospector: `python modules/mining/autonomous_prospector.py` (full-enzyme + optional CRISPR repeat requirement; saves `data/raw_sequences/deep_hits_*.fasta` + `*_metadata.csv` with SRA + repeat domains) |
+| | **Exhaustive mode:** `EXHAUSTIVE_MODE=1 python modules/mining/autonomous_prospector.py` — single fixed query (bacteria/archaea WGS + metagenomic), paginate through all NCBI Nucleotide contigs, mine every one (no LLM/semantic filter). Set `FILTER_23_HEPN=1` to keep only 2–3 HEPN hits for the dashboard. Output same paths → then **filter_23_hepn** → structure pipeline → dashboard. |
 | | SRA Scout: `SRAScout().search_wgs(...)` → `fetch_and_mine` (full-enzyme ORF checks applied) |
 | | **SRA Diamond pipeline:** `python scripts/run_sra_cas13_search.py` — Bacteria/Archaea WGS or METAGENOMIC; 4-step workflow: (1) **Diamond** blastx (protein-space bait on downloaded reads), (2) **Hook** (extract hit + mate reads), (3) **Megahit** (assemble subset), (4) **Prodigal** + filter (700–1400 aa, 2 HEPN, N/C intact, CRISPR on contig). Writes `deep_hits_*.fasta` + metadata for structure pipeline. Requires on PATH: [SRA Toolkit](https://github.com/ncbi/sra-tools) (`fasterq-dump`), [Diamond](https://github.com/bbuchfink/diamond), [Megahit](https://github.com/voutcn/megahit), [Prodigal](https://github.com/hyattpd/Prodigal). |
 | **2. Family Grouping** | `python modules/mining/family_grouper.py` (ESM-2 homology, SN01_001 naming) |

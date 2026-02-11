@@ -9,6 +9,7 @@ import logging
 import random
 from datetime import datetime
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from Bio import SeqIO, Entrez
 
 # Ensure imports work for VPS environment
@@ -16,7 +17,7 @@ sys.path.append(os.getcwd())
 try:
     from modules.mining.sra_scout import SRAScout
     from modules.mining.deep_miner_utils import DeepEngine, NeighborhoodWatch
-    from modules.mining.full_orf_checks import full_orf_passes, get_full_orf_config
+    from modules.mining.full_orf_checks import full_orf_passes, get_full_orf_config, orf_nucleotide_bounds
 except ImportError as e:
     print("[!] Critical: Modules missing. Ensure 'sra_scout.py' and 'deep_miner_utils.py' exist.", e)
     sys.exit(1)
@@ -30,6 +31,34 @@ except ImportError:
 DB_PATH = "data/prospector.db"
 LOG_FILE = "prospector.log"
 Entrez.email = "founder@senarybio.com"
+
+# 2-3 HEPN filter for dashboard pipeline (same motif as filter_23_hepn.py)
+HEPN_REGEX = re.compile(r"R.{4,6}H")
+MIN_HEPN_DASHBOARD = 2
+MAX_HEPN_DASHBOARD = 3
+
+# CRISPR must be within this many bp upstream or downstream of the ORF (default 10 kb)
+CRISPR_FLANK_BP_DEFAULT = 10_000
+
+
+def _deep_mine_chunk(id_chunk):
+    """Worker entry: create prospector and mine a chunk of nucleotide IDs. Used when PROSPECTOR_WORKERS > 1."""
+    prospector = AutonomousProspector()
+    return prospector.deep_mine(id_chunk)
+
+
+def _crispr_within_flank(orf_start_contig: int, orf_end_contig: int, repeat_regions: list, flank_bp: int) -> bool:
+    """True if at least one CRISPR repeat region is within flank_bp of the ORF (upstream or downstream)."""
+    for (cr_start, cr_end) in repeat_regions:
+        if orf_end_contig < cr_start:
+            gap = cr_start - orf_end_contig
+        elif cr_end < orf_start_contig:
+            gap = orf_start_contig - cr_end
+        else:
+            gap = 0  # overlap or adjacent
+        if gap <= flank_bp:
+            return True
+    return False
 
 # Broad, diverse SRA search queries to maximize coverage and minimize overlap.
 # Covers extreme environments, marine, terrestrial, gut, plant, industrial, symbionts.
@@ -358,6 +387,7 @@ class AutonomousProspector:
 
     def deep_mine(self, id_list):
         require_crispr = os.getenv("REQUIRE_CRISPR", "1").lower() in ("1", "true", "yes")
+        crispr_flank_bp = int(os.getenv("CRISPR_FLANK_BP", str(CRISPR_FLANK_BP_DEFAULT)))
         require_full_structure = os.getenv("REQUIRE_FULL_STRUCTURE", "0").lower() in ("1", "true", "yes")
         min_repeat_count = int(os.getenv("MIN_REPEAT_COUNT", "1"))
         esm_threshold = float(os.getenv("ESM_THRESHOLD", "0.75"))
@@ -376,13 +406,14 @@ class AutonomousProspector:
                 if not hmms:
                     logging.warning("USE_HMMER=1 but no HMMs found in %s; continuing with ESM-only.", hmm_dir)
                     use_hmmer = False
-        hits = []
+        # Collect all ORF candidates (pre-ESM filters only), then batch score for speed
+        candidates = []  # (orf, ncbi_id, frame_index, orf_index, orfs, contig_len, repeat_domains, repeat_regions)
+        id_stats = {}    # ncbi_id -> {contigs_scanned, contigs_with_crispr, candidate_count}
+
         for ncbi_id in id_list:
             logging.info(f"   -> Scanning ID {ncbi_id}...")
             contigs_scanned = 0
             contigs_with_crispr = 0
-            orfs_scored = 0
-            best_score = 0.0
             try:
                 handle = Entrez.efetch(db="nucleotide", id=ncbi_id, rettype="fasta", retmode="text")
                 records = list(SeqIO.parse(handle, "fasta"))
@@ -399,6 +430,7 @@ class AutonomousProspector:
                         logging.info(f"      [!] CRISPR Array detected in {ncbi_id}. Analyzing proteins...")
 
                     repeat_domains = self.context_engine.get_repeat_domains(dna_seq)
+                    repeat_regions = self.context_engine.get_repeat_regions(dna_seq)
                     contig_len = len(dna_seq)
 
                     frames = [dna_seq[i:].translate(to_stop=False) for i in range(3)]
@@ -422,26 +454,162 @@ class AutonomousProspector:
                                     hmm_hit = scan_single(orf, hmms=hmms, e_value_cutoff=hmm_evalue)
                                     if hmm_hit is None:
                                         continue
-                                score = self.deep_engine.score_candidate(orf)
-                                orfs_scored += 1
-                                if score > best_score:
-                                    best_score = score
-                                if score > esm_threshold and self.deep_engine.passes_diversity_band(score):
-                                    if (require_full_structure or require_crispr) and len(repeat_domains) < min_repeat_count:
-                                        continue
-                                    logging.info(f"      [***] DISCOVERY: Novel Enzyme (Score: {score:.4f})")
-                                    hits.append((f"{ncbi_id}_ORF", orf, score, ncbi_id, repeat_domains))
+                                candidates.append((orf, ncbi_id, frame_index, orf_index, orfs, contig_len, repeat_domains, repeat_regions))
 
-                if contigs_scanned > 0:
-                    logging.info(f"      ID {ncbi_id}: {contigs_scanned} contigs, {contigs_with_crispr} with CRISPR, {orfs_scored} ORFs scored, best={best_score:.3f}")
-                if orfs_scored > 0 and best_score < esm_threshold:
-                    logging.info(f"      (Best score {best_score:.3f} below threshold {esm_threshold})")
+                id_stats[ncbi_id] = {"contigs_scanned": contigs_scanned, "contigs_with_crispr": contigs_with_crispr, "candidate_count": 0}
             except Exception as e:
                 logging.error(f"Error mining {ncbi_id}: {e}")
 
+        for c in candidates:
+            ncbi_id = c[1]
+            if ncbi_id in id_stats:
+                id_stats[ncbi_id]["candidate_count"] += 1
+
+        if not candidates:
+            for ncbi_id, st in id_stats.items():
+                logging.info(f"      ID {ncbi_id}: {st['contigs_scanned']} contigs, {st['contigs_with_crispr']} with CRISPR, 0 ORFs scored.")
+            return []
+
+        # Batch ESM-2 scoring (much faster than one-by-one on multi-core/GPU)
+        batch_size = int(os.getenv("ESM_BATCH_SIZE", "32"))
+        scores = self.deep_engine.score_candidates_batch([c[0] for c in candidates], batch_size=batch_size)
+
+        hits = []
+        filter_23 = os.getenv("FILTER_23_HEPN", "0").lower() in ("1", "true", "yes")
+        for (cand, score) in zip(candidates, scores):
+            orf, ncbi_id, frame_index, orf_index, orfs, contig_len, repeat_domains, repeat_regions = cand
+            if score <= esm_threshold or not self.deep_engine.passes_diversity_band(score):
+                continue
+            if (require_full_structure or require_crispr) and len(repeat_domains) < min_repeat_count:
+                continue
+            if require_crispr:
+                if not repeat_regions:
+                    continue
+                start_nt, end_nt = orf_nucleotide_bounds(frame_index, orf_index, orfs)
+                if frame_index >= 3:
+                    orf_start_contig = contig_len - 1 - end_nt
+                    orf_end_contig = contig_len - 1 - start_nt
+                else:
+                    orf_start_contig = start_nt
+                    orf_end_contig = end_nt
+                if not _crispr_within_flank(orf_start_contig, orf_end_contig, repeat_regions, crispr_flank_bp):
+                    continue
+            if filter_23:
+                hepn_count = len(HEPN_REGEX.findall(orf))
+                if not (MIN_HEPN_DASHBOARD <= hepn_count <= MAX_HEPN_DASHBOARD):
+                    continue
+            logging.info(f"      [***] DISCOVERY: Novel Enzyme (Score: {score:.4f})")
+            hits.append((f"{ncbi_id}_ORF", orf, score, ncbi_id, repeat_domains))
+
+        # Per-id summary logging
+        best_by_id = {}
+        for (cand, score) in zip(candidates, scores):
+            ncbi_id = cand[1]
+            best_by_id[ncbi_id] = max(best_by_id.get(ncbi_id, 0), score)
+        for ncbi_id, st in id_stats.items():
+            orfs_scored = st["candidate_count"]
+            best_score = best_by_id.get(ncbi_id, 0.0)
+            if st["contigs_scanned"] > 0:
+                logging.info(f"      ID {ncbi_id}: {st['contigs_scanned']} contigs, {st['contigs_with_crispr']} with CRISPR, {orfs_scored} ORFs scored, best={best_score:.3f}")
+            if orfs_scored > 0 and best_score < esm_threshold:
+                logging.info(f"      (Best score {best_score:.3f} below threshold {esm_threshold})")
+
         return hits
 
+    def _run_deep_mine_parallel(self, id_list):
+        """Run deep_mine on id_list; if PROSPECTOR_WORKERS > 1, split into chunks and run in parallel."""
+        workers = int(os.getenv("PROSPECTOR_WORKERS", "1"))
+        if workers <= 1 or len(id_list) <= 1:
+            return self.deep_mine(id_list)
+        chunk_size = max(1, (len(id_list) + workers - 1) // workers)
+        chunks = [id_list[i : i + chunk_size] for i in range(0, len(id_list), chunk_size)]
+        all_hits = []
+        logging.info(f"Parallel mining: {len(id_list)} IDs in {len(chunks)} workers (PROSPECTOR_WORKERS={workers})")
+        with ProcessPoolExecutor(max_workers=len(chunks)) as executor:
+            futures = {executor.submit(_deep_mine_chunk, chunk): chunk for chunk in chunks}
+            for future in as_completed(futures):
+                try:
+                    hits = future.result()
+                    all_hits.extend(hits)
+                except Exception as e:
+                    logging.error(f"Prospector worker failed: {e}")
+        return all_hits
+
+    def run_loop_exhaustive(self):
+        """
+        Exhaustive contig mining: single fixed query (bacteria/archaea WGS/metagenome),
+        paginate through all nucleotide IDs, mine every contig, no LLM/semantic filter.
+        Writes to data/raw_sequences/ for downstream filter_23_hepn -> structure pipeline -> dashboard.
+        """
+        deep_mine_max = int(os.getenv("DEEP_MINE_MAX", "50"))
+        filter_23 = os.getenv("FILTER_23_HEPN", "1").lower() in ("1", "true", "yes")
+        total_count = self.scout.get_exhaustive_search_count()
+        logging.info(f"--- Senary Bio: Deep Prospector (EXHAUSTIVE MODE) ---")
+        logging.info(f"Total nucleotide IDs matching query: {total_count}")
+        logging.info(f"Page size: {deep_mine_max} | FILTER_23_HEPN={filter_23} (only 2-3 HEPN for dashboard)")
+        logging.info(f"CRISPR: mandatory, within CRISPR_FLANK_BP={os.getenv('CRISPR_FLANK_BP', str(CRISPR_FLANK_BP_DEFAULT))} bp of ORF")
+        workers = int(os.getenv("PROSPECTOR_WORKERS", "1"))
+        logging.info(f"Workers: PROSPECTOR_WORKERS={workers} | ESM batch: ESM_BATCH_SIZE={os.getenv('ESM_BATCH_SIZE', '32')}")
+        logging.info("Output: data/raw_sequences/deep_hits_*.fasta + *_metadata.csv -> then filter_23_hepn -> structure pipeline -> dashboard")
+
+        visited = self.get_visited_ids()
+        page = 0
+        total_hits_this_run = 0
+
+        while True:
+            retstart = len(visited)
+            raw_ids = self.scout.search_exhaustive_wgs(max_records=deep_mine_max, retstart=retstart)
+            if not raw_ids:
+                logging.info("No more nucleotide IDs. Exhaustive mining complete.")
+                break
+
+            ids = [uid for uid in raw_ids if uid not in visited]
+            if not ids:
+                logging.info("All IDs on this page already visited (duplicate page?). Advancing.")
+                visited = self.get_visited_ids()
+                if retstart >= total_count:
+                    break
+                continue
+
+            logging.info(f"Page {page + 1}: mining {len(ids)} new contig(s) (visited={len(visited)} total, ~{total_count} in DB).")
+            new_discoveries = self._run_deep_mine_parallel(ids)
+            if new_discoveries:
+                os.makedirs("data/raw_sequences", exist_ok=True)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                fasta_path = f"data/raw_sequences/deep_hits_{timestamp}.fasta"
+                meta_path = f"data/raw_sequences/deep_hits_{timestamp}_metadata.csv"
+                with open(fasta_path, "w") as f:
+                    for name, seq, score, nuc_id, repeat_domains in new_discoveries:
+                        seq_id = f"{name}_Score_{score:.3f}"
+                        f.write(f">{seq_id}\n{seq}\n")
+                with open(meta_path, "w", newline="", encoding="utf-8") as m:
+                    writer = csv.writer(m)
+                    writer.writerow(["sequence_id", "sra_accession", "repeat_domains", "score"])
+                    for name, seq, score, nuc_id, repeat_domains in new_discoveries:
+                        seq_id = f"{name}_Score_{score:.3f}"
+                        repeat_str = "|".join(repeat_domains) if repeat_domains else ""
+                        writer.writerow([seq_id, str(nuc_id), repeat_str, f"{score:.3f}"])
+                total_hits_this_run += len(new_discoveries)
+                logging.info(f"SUCCESS: Saved {len(new_discoveries)} hits to {fasta_path} (total this run: {total_hits_this_run})")
+
+            self.mark_ids_visited(raw_ids)
+            visited = self.get_visited_ids()
+            page += 1
+
+            if len(raw_ids) < deep_mine_max:
+                logging.info("Last page had fewer than page_size results. Exhaustive mining complete.")
+                break
+
+            time.sleep(2)
+
+        logging.info(f"Exhaustive run finished. Total hits saved this run: {total_hits_this_run}. Next: filter_23_hepn -> structure pipeline -> dashboard.")
+
     def run_loop(self):
+        # Exhaustive mode: single fixed query, paginate all bacteria/archaea WGS contigs, no LLM
+        if os.getenv("EXHAUSTIVE_MODE", "0").lower() in ("1", "true", "yes"):
+            self.run_loop_exhaustive()
+            return
+
         require_crispr = os.getenv("REQUIRE_CRISPR", "1").lower() in ("1", "true", "yes")
         esm_threshold = float(os.getenv("ESM_THRESHOLD", "0.75"))
         deep_mine_max = int(os.getenv("DEEP_MINE_MAX", "15"))
@@ -454,6 +622,8 @@ class AutonomousProspector:
         if esm_ref_fasta:
             logging.info(f"ESM_REFERENCE_FASTA set: mining for closest similarity to RfxCas13d/PspCas13a (leave ESM_SIMILARITY_CEILING unset to keep closest matches)")
         logging.info(f"Full enzyme: REQUIRE_START_M={os.getenv('REQUIRE_START_M','1')}, MIN_CTERM_TAIL={os.getenv('MIN_CTERM_TAIL','15')}, REQUIRE_FULL_STRUCTURE={require_full_structure}, MIN_REPEAT_COUNT={min_repeat_count}")
+        logging.info(f"CRISPR: mandatory (REQUIRE_CRISPR={require_crispr}), within CRISPR_FLANK_BP={os.getenv('CRISPR_FLANK_BP', str(CRISPR_FLANK_BP_DEFAULT))} bp of ORF")
+        logging.info(f"Workers: PROSPECTOR_WORKERS={os.getenv('PROSPECTOR_WORKERS', '1')} | ESM batch: ESM_BATCH_SIZE={os.getenv('ESM_BATCH_SIZE', '32')}")
         logging.info(f"ORF size: 600-1400 aa | Broad queries: {len(BROAD_SEARCH_QUERIES)} | SRA_MAX_RECORDS={os.getenv('SRA_MAX_RECORDS', '100')}")
 
         # Threshold: same/similar SRA set this many times in a row -> force very broad random search
@@ -554,7 +724,7 @@ class AutonomousProspector:
 
             hits = 0
             if best_ids:
-                new_discoveries = self.deep_mine(best_ids)
+                new_discoveries = self._run_deep_mine_parallel(best_ids)
                 if new_discoveries:
                     os.makedirs("data/raw_sequences", exist_ok=True)
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
