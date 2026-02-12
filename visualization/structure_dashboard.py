@@ -276,7 +276,10 @@ def main():
         with open(filter_results_path) as f:
             raw = json.load(f)
         for sid, r in raw.items():
-            h = {k: r[k] for k in ("cas13a", "cas13b", "cas13d") if k in r and r[k] is not None}
+            # Extract any key that looks like a TM-score (numeric value, not a control field)
+            _skip_keys = {"pass_overall", "hepn_pass", "tm_score", "hepn1_tm", "hepn2_tm",
+                          "catalytic_distance_angstrom", "linker_net_charge", "linker_plddt_mean", "plddt_dip_ok"}
+            h = {k: v for k, v in r.items() if k not in _skip_keys and isinstance(v, (int, float)) and v is not None}
             if h:
                 homology[sid] = h
 
@@ -300,20 +303,13 @@ def main():
         d = domains.get(seq_id, [])
         h = homology.get(seq_id, {})
         fr = filter_results.get(seq_id, {})
-        cas13a = h.get("cas13a")
-        cas13b = h.get("cas13b")
-        cas13d = h.get("cas13d")
+        # Find best TM-score across ALL references (dynamic, works with any number)
         best = None
         best_name = None
-        if cas13a is not None and (best is None or (cas13a or 0) > best):
-            best = cas13a
-            best_name = "Cas13a"
-        if cas13b is not None and (best is None or (cas13b or 0) > best):
-            best = cas13b
-            best_name = "Cas13b"
-        if cas13d is not None and (best is None or (cas13d or 0) > best):
-            best = cas13d
-            best_name = "RfxCas13d"
+        for ref_label, tm_val in h.items():
+            if tm_val is not None and (best is None or tm_val > best):
+                best = tm_val
+                best_name = ref_label
 
         # NUC/REC lobe prediction
         seq_str = s.get("sequence", "")
@@ -339,9 +335,6 @@ def main():
             "hepn_count": hepn_count,
             "family": s.get("family", parse_family_id(seq_id)),
             "domains": d,
-            "cas13a": round(cas13a * 100, 1) if cas13a is not None else None,
-            "cas13b": round(cas13b * 100, 1) if cas13b is not None else None,
-            "cas13d": round(cas13d * 100, 1) if cas13d is not None else None,
             "best_match": best_name,
             "best_pct": round((best or 0) * 100, 1) if best is not None else None,
             "pdb_path": pdb_paths.get(seq_id),
@@ -542,10 +535,8 @@ def main():
             <th>Linker chg</th>
             <th>pLDDT dip</th>
             <th>Func</th>
-            <th>Cas13a %</th>
-            <th>Cas13b %</th>
-            <th>RfxCas13d %</th>
-            <th>Best</th>
+            <th>Best Reference</th>
+            <th>TM %</th>
             <th>SRA</th>
           </tr>
         </thead>
@@ -690,10 +681,8 @@ def main():
           <td title="Linker net charge (R+K-D-E)">${{fmt(r.linker_net_charge)}}</td>
           <td title="Linker pLDDT dip (flexible)">${{dip}}</td>
           <td title="Functional criteria pass count (max 4)">${{r.func_pass != null ? r.func_pass : '-'}}</td>
-          <td class="pct">${{r.cas13a != null ? r.cas13a + '%' : '-'}}</td>
-          <td class="pct">${{r.cas13b != null ? r.cas13b + '%' : '-'}}</td>
-          <td class="pct">${{r.cas13d != null ? r.cas13d + '%' : '-'}}</td>
-          <td>${{r.best_match || '-'}}</td>
+          <td title="Best matching reference (highest TM-score across all refs)">${{r.best_match || '-'}}</td>
+          <td class="pct" title="TM-score vs best reference">${{r.best_pct != null ? r.best_pct + '%' : '-'}}</td>
           <td title="${{r.sra_accession || ''}}">${{sra || '-'}}</td>`;
         tr.addEventListener("click", () => selectRow(i));
         tbody.appendChild(tr);

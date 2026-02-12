@@ -64,14 +64,13 @@ def run_full_filter(
         output_json=str(results_path),
     )
 
-    # 2b. Write homology_scores.json for dashboard (per-ref: cas13a, cas13b, cas13d)
+    # 2b. Write homology_scores.json for dashboard (all reference TM-scores, dynamic)
     homology_path = Path(structures_dir).parent / "homology_scores.json"
     homology = {}
+    _skip_keys = {"pass_overall", "hepn_pass", "tm_score", "hepn1_tm", "hepn2_tm",
+                  "catalytic_distance_angstrom", "linker_net_charge", "linker_plddt_mean", "plddt_dip_ok"}
     for sid, r in results.items():
-        h = {}
-        for k in ("cas13a", "cas13b", "cas13d"):
-            if k in r and r[k] is not None:
-                h[k] = r[k]
+        h = {k: v for k, v in r.items() if k not in _skip_keys and isinstance(v, (int, float)) and v is not None}
         if h:
             homology[sid] = h
     homology_path.parent.mkdir(parents=True, exist_ok=True)

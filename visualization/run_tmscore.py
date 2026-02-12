@@ -87,13 +87,39 @@ def run_usalign(pdb1: str, pdb2: str) -> Optional[float]:
 
 
 def run_tmtools(pdb1: str, pdb2: str) -> Optional[float]:
-    """Try tmtools Python package for TM-score."""
+    """Try tmtools Python package for TM-score.
+
+    The tmtools PyPI package exposes tm_align(coords1, coords2, seq1, seq2),
+    NOT tm_score(path, path).  We load PDB structures via tmtools.io, extract
+    chain coordinates, and call tm_align.
+    """
+    # Method 1: load PDBs via tmtools.io helpers and run tm_align
+    try:
+        from tmtools import tm_align
+        from tmtools.io import get_structure, get_residue_data
+        s1 = get_structure(pdb1)
+        s2 = get_structure(pdb2)
+        chain1 = next(s1.get_chains(), None)
+        chain2 = next(s2.get_chains(), None)
+        if chain1 is None or chain2 is None:
+            return None
+        coords1, seq1 = get_residue_data(chain1)
+        coords2, seq2 = get_residue_data(chain2)
+        if coords1 is None or coords2 is None or not seq1 or not seq2:
+            return None
+        res = tm_align(coords1, coords2, seq1, seq2)
+        return float(getattr(res, "tm_norm_chain1", getattr(res, "tm_score", None)))
+    except Exception:
+        pass
+    # Method 2: legacy tmtools.tm_score(path, path) if it exists in an older version
     try:
         import tmtools
-        res = tmtools.tm_score(pdb1, pdb2)
-        return res.tm_norm_chain1 if hasattr(res, "tm_norm_chain1") else res.tm_score
+        if hasattr(tmtools, "tm_score"):
+            res = tmtools.tm_score(pdb1, pdb2)
+            return float(getattr(res, "tm_norm_chain1", res.tm_score))
     except Exception:
-        return None
+        pass
+    return None
 
 
 def compute_tm_score(pdb_query: str, pdb_ref: str) -> Optional[float]:
