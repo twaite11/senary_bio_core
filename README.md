@@ -1,336 +1,514 @@
-# Senary Bio
+<div align="center">
 
-> **Computational Discovery Platform for Novel Type VI CRISPR Enzyme Therapeutics**
+# SENARY BIO
+
+### Computational Discovery Platform for Novel Type VI CRISPR Enzyme Therapeutics
+
+<br>
+
+```
+  Mine  ──────>  Design  ──────>  Structure  ──────>  Identity  ──────>  Match
+  NCBI WGS        ESM-2           OmegaFold          Drift <85%         Enzyme x
+  6-frame ORF     Mutate          TM-score            vs Known          Fusion
+  CRISPR loci     Drift           Bi-lobed HEPN       Cas13              Targets
+```
+
+<br>
+
+![Python](https://img.shields.io/badge/Python-3.8+-3776AB?style=flat-square&logo=python&logoColor=white)
+![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-EE4C2C?style=flat-square&logo=pytorch&logoColor=white)
+![ESM-2](https://img.shields.io/badge/ESM--2-35M-00897B?style=flat-square)
+![OmegaFold](https://img.shields.io/badge/OmegaFold-Structure-6A1B9A?style=flat-square)
+![Gemini](https://img.shields.io/badge/Gemini-AI_Agent-4285F4?style=flat-square&logo=google&logoColor=white)
+![License](https://img.shields.io/badge/License-Proprietary-333333?style=flat-square)
+
+</div>
 
 ---
 
-<p align="center">
-  <marquee behavior="scroll" direction="left" scrollamount="4" style="background: linear-gradient(90deg, #0d1117 0%, #161b22 50%, #0d1117 100%); padding: 10px 0; border-radius: 4px; font-family: monospace; font-size: 14px;">
-    <strong>Python 3.8+</strong> · <strong>BioPython</strong> · <strong>Pandas</strong> · <strong>NumPy</strong> · <strong>h5py</strong> · <strong>ARCHS4</strong> · <strong>NCBI Entrez</strong> · <strong>ESM-2</strong> · <strong>Transformers</strong> · <strong>PyTorch</strong> · <strong>OmegaFold</strong> · <strong>Google Gemini</strong> · <strong>JupyterLab</strong> · <strong>SQLite</strong> · <strong>Ollama/Llama</strong> · <strong>ChimerDB</strong> · <strong>TCGA</strong>
-  </marquee>
-</p>
-
----
+<br>
 
 ## Table of Contents
 
-1. [Mission](#-mission)
-2. [Platform Overview](#-platform-overview)
-3. [Structure Pipeline & Dashboard](#-structure-pipeline--dashboard)
-4. [Enzyme Mining (The Armory)](#-piece-1-enzyme-mining-the-armory)
-5. [Target Discovery (The Vault)](#-piece-2-target-discovery-the-vault)
-6. [Matchmaker](#-piece-3-matchmaker)
-7. [Expert Agent](#-piece-4-expert-agent)
-8. [Technology Stack](#%EF%B8%8F-technology-stack)
-9. [Quick Start & Workflow](#-quick-start--workflow)
-10. [Project Structure](#-project-structure)
-11. [Configuration](#%EF%B8%8F-configuration)
+| # | Section | Description |
+|:-:|---------|-------------|
+| 1 | [Mission](#mission) | What we're building and why |
+| 2 | [Platform Overview](#platform-overview) | End-to-end discovery pipeline |
+| 3 | [Structure Pipeline](#structure-pipeline--dashboard) | OmegaFold, TM-score, interactive dashboard |
+| 4 | [Enzyme Mining](#enzyme-mining--the-armory) | SRA/WGS prospecting modules |
+| 5 | [Target Discovery](#target-discovery--the-vault) | Fusion RNA target identification |
+| 6 | [Matchmaker](#matchmaker) | Enzyme-target pairing engine |
+| 7 | [Expert Agent](#expert-agent) | AI-driven lead validation |
+| 8 | [Quick Start](#quick-start) | Setup, data, and workflow |
+| 9 | [Project Structure](#project-structure) | Repository layout |
+| 10 | [Configuration](#configuration) | Environment variables and tuning |
+
+<br>
 
 ---
 
-## 🎯 Mission
+## Mission
 
-**Senary Bio** is pioneering the development of precision cancer therapeutics through novel Type VI CRISPR enzyme discovery. Our mission is to identify and validate high-collateral novel Type VI CRISPR enzyme variants capable of targeting cancer-specific fusion RNAs, creating a "suicide switch" mechanism that induces apoptosis specifically in tumor cells while preserving healthy tissue.
+**Senary Bio** is building precision cancer therapeutics through novel Type VI CRISPR enzyme discovery. The platform identifies and validates high-collateral Type VI CRISPR enzyme variants capable of targeting cancer-specific fusion RNAs -- creating a "suicide switch" mechanism that induces apoptosis specifically in tumor cells while preserving healthy tissue.
 
-We combine computational biology, machine learning, and high-throughput screening to accelerate the discovery of next-generation RNA-guided therapeutics.
+We combine computational biology, deep learning, and high-throughput structural screening to accelerate the discovery of next-generation RNA-guided therapeutics.
+
+<br>
 
 ---
 
-## 🏗️ Platform Overview
+## Platform Overview
 
-See **[FILTERING_MAP.md](FILTERING_MAP.md)** for the full filtering map from NCBI scraping → enzyme filters → target filters → matchmaker → expert agent → final novel Type VI CRISPR enzyme candidates.
+> See **[FILTERING_MAP.md](FILTERING_MAP.md)** for the complete filtering map from NCBI scraping through final candidate selection.
 
-**Discovery process (high level):**
+<br>
 
-1. **Mine** – SRA/WGS in obscure environments; 6-frame translate; keep only **full-enzyme** ORFs (N-term M, C-term tail, not truncated) and, when enabled, loci with **CRISPR repeats** (saved in metadata for synthesis).
-2. **Design** – Embed pool (ESM-2), optional interpolate, mutate for drift (stability + &lt;85% identity).
-3. **Structure filter** – OmegaFold → bi-lobed/HEPN check → keep only structure-passed sequences.
-4. **Identity filter** – Keep only sequences &lt;85% identical to known Cas13 (drift goal).
-5. **Matchmaker → Expert Agent** – Enzyme × fusion targets → ARCHS4 + Gemini → final leads.
+<table>
+<tr><th>Stage</th><th>Process</th><th>Output</th></tr>
+<tr>
+  <td><b>1. Mine</b></td>
+  <td>SRA/WGS in obscure environments; 6-frame translate; full-enzyme ORF validation (N-term M, C-term tail, not truncated); CRISPR repeat metadata</td>
+  <td><code>deep_hits_*.fasta</code></td>
+</tr>
+<tr>
+  <td><b>2. Design</b></td>
+  <td>ESM-2 embedding; optional interpolation; mutate for drift (stability + &lt;85% identity to known Cas13)</td>
+  <td><code>drift_variants.fasta</code></td>
+</tr>
+<tr>
+  <td><b>3. Structure</b></td>
+  <td>OmegaFold prediction; bi-lobed / HEPN structural check; TM-score vs 34 Cas13 family references</td>
+  <td><code>passed_structures.fasta</code></td>
+</tr>
+<tr>
+  <td><b>4. Identity</b></td>
+  <td>Keep only sequences &lt;85% identical to known Cas13 (drift goal)</td>
+  <td><code>passed.fasta</code></td>
+</tr>
+<tr>
+  <td><b>5. Match</b></td>
+  <td>Enzyme x fusion targets; PFS rule; ARCHS4 expression; Gemini AI verdict</td>
+  <td><code>lead_candidates.csv</code></td>
+</tr>
+</table>
+
+<br>
 
 ```
-┌─────────────────────────────────────────────┐   ┌─────────────────────────────────────────────┐
-│         THE ARMORY (Enzyme Mining)           │   │        THE VAULT (Target Discovery)         │
-│  sra_scout · autonomous_prospector · full_orf_checks │   │  fusion_metadata · specificity_filter · archs4 │
-│  full_orf_checks · CRISPR repeat metadata   │   │                                             │
-└──────────────────────┬──────────────────────┘   └──────────────────────┬──────────────────────┘
-                       └────────────────────┬─────────────────────────────┘
-                                            ▼
-┌───────────────────────────────────────────────────────────────────────────────────────────────────┐
-│  FULL PIPELINE (optional):  embed_pool → mutate_for_drift → structure_filter → identity_filter     │
-│  run_full_pipeline.py  →  data/identity_filtered/passed.fasta  →  MATCHMAKER  →  EXPERT AGENT    │
-└───────────────────────────────────────────────────────────────────────────────────────────────────┘
-                                            ▼
-                               ┌────────────────────────┐
-                               │   MATCHMAKER           │  →  EXPERT AGENT  →  lead_candidates_filtered.csv
-                               │   Enzyme × Fusion      │
-                               └────────────────────────┘
+ THE ARMORY (Enzyme Mining)                         THE VAULT (Target Discovery)
+ ┌─────────────────────────────────────┐            ┌─────────────────────────────────────┐
+ │  sra_scout                          │            │  fusion_metadata                    │
+ │  autonomous_prospector              │            │  specificity_filter                 │
+ │  full_orf_checks                    │            │  archs4_loader                      │
+ │  CRISPR repeat metadata             │            │  mutation_loader                    │
+ └──────────────────┬──────────────────┘            └──────────────────┬──────────────────┘
+                    │                                                  │
+                    └──────────────────────┬───────────────────────────┘
+                                           │
+                                           v
+ ┌─────────────────────────────────────────────────────────────────────────────────────────┐
+ │  FULL PIPELINE                                                                         │
+ │  embed_pool -> mutate_for_drift -> structure_filter -> identity_filter                  │
+ │  run_full_pipeline.py  ->  data/identity_filtered/passed.fasta                         │
+ └─────────────────────────────────────────┬───────────────────────────────────────────────┘
+                                           │
+                                           v
+                              ┌────────────────────────────┐
+                              │  MATCHMAKER -> EXPERT AGENT │
+                              │  lead_candidates.csv        │
+                              └────────────────────────────┘
 ```
+
+<br>
 
 ---
 
-## 🔬 Structure Pipeline & Dashboard
+## Structure Pipeline & Dashboard
 
-For 2–3 HEPN filtered enzymes, the structure pipeline predicts 3D conformations with **OmegaFold**, computes TM-score homology vs known Type VI CRISPR structural references, and builds an interactive dashboard with domain coloring and motif tables.
+For 2-3 HEPN filtered enzymes, the structure pipeline predicts 3D conformations with **OmegaFold**, computes TM-score homology against all known Cas13-family crystal structures (34 references across Cas13a/b/d/bt/X/Y), and builds an interactive dashboard with domain coloring, motif tables, and a 3D viewer.
 
-![Structure Dashboard](assets/structure-dashboard-screenshot.png)
+Each sequence is predicted in its own subprocess to prevent CUDA memory fragmentation. The pipeline supports resume (skips existing PDBs) and early termination on persistent OOM.
 
-*Example: Protein SN04_002 (867 aa) with HEPN motifs highlighted on the sequence bar and detailed motif table (position, length, sequence).*
+<br>
 
-OmegaFold-predicted structures in the dashboard are colored by **Pfam domain** (when InterPro annotations are available). The 3D viewer uses the same color scheme:
+### Domain Color Scheme
 
-![Domain color legend](assets/structure-domain-legend.png)
+When InterPro annotations are available, the 3D viewer colors structures by Pfam domain:
 
-| Color | Domain | Pfam | Meaning |
-|-------|--------|------|---------|
-| **Cyan** | HEPN | PF05168 | Higher Eukaryotes and Prokaryotes Nucleotide-binding domain; the **nuclease** that cleaves RNA (RxxxxH motif). Cas13 has 2–3 HEPN domains. |
-| **Orange** | HEL | PF01228 | Helicase-like domain; often involved in crRNA binding and target recognition. |
-| **Slate gray** | WYL | PF18456 | WYL-domain (effector-associated); found in some Type VI systems. |
-| *Spectrum* | — | — | Regions without a mapped Pfam domain are shown in a rainbow gradient by position along the chain. |
+| Color | Domain | Pfam | Role |
+|:-----:|--------|:----:|------|
+| **Cyan** | HEPN | PF05168 | Nucleotide-binding nuclease domain; cleaves RNA via RxxxxH motif. Cas13 has 2-3 HEPN domains. |
+| **Orange** | HEL | PF01228 | Helicase-like domain; crRNA binding and target recognition. |
+| **Slate** | WYL | PF18456 | WYL effector-associated domain; found in some Type VI systems. |
+| *Spectrum* | -- | -- | Unmapped regions shown in rainbow gradient by chain position. |
 
-Run InterProScan on your 2–3 HEPN FASTA and pass the resulting `domains.json` to the structure dashboard to see domain-colored 3D structures; otherwise the viewer shows the full chain in spectrum coloring.
+<br>
 
-### What the Dashboard Shows
+### Dashboard Columns
 
-| Feature | Description |
+| Column | Description |
 |--------|-------------|
-| **Protein ID & length** | Identifier (e.g. `SN04_002`) and total amino acids |
-| **Sequence bar** | Linear map of the protein with domain/motif regions highlighted in cyan |
-| **Motif table** | Start, End, Length, and sequence for each identified HEPN motif |
-| **3D viewer** | Interactive OmegaFold structure (3Dmol.js) with domain coloring as in the table above |
+| **Protein ID / Length** | Identifier and total amino acids |
+| **HEPN count** | Number of HEPN domains detected |
+| **NUC / REC** | Predicted nuclease and recognition lobe residue spans |
+| **HEPN1/2 TM** | Local TM-score for each HEPN domain vs reference |
+| **Catalytic distance** | Distance between RxxxxH catalytic histidines (Angstroms) |
+| **Best Reference** | Highest-scoring Cas13 family reference (dynamic across all 34) |
+| **TM %** | TM-score percentage against best reference |
+| **3D Viewer** | Interactive OmegaFold structure (3Dmol.js) with domain coloring |
 
-**From exhaustive prospector to dashboard:** After running with `EXHAUSTIVE_MODE=1`, use the same 2–3 HEPN filter and structure pipeline so candidates appear in the dashboard (folded structures):
+<br>
+
+### Running the Structure Pipeline
 
 ```bash
-# 0. (Optional) Exhaustive mining already wrote data/raw_sequences/deep_hits_*.fasta
-# 1. Filter to 2-3 HEPN sequences (input: latest deep_hits or fam_fasta)
-python visualization/filter_23_hepn.py --input data/raw_sequences/deep_hits_YYYYMMDD_HHMMSS.fasta --output data/structure_pipeline/input_2-3_hepn.fasta
+# 1. Filter to 2-3 HEPN sequences
+python visualization/filter_23_hepn.py \
+    --input data/raw_sequences/deep_hits_YYYYMMDD.fasta \
+    --output data/structure_pipeline/input_2-3_hepn.fasta
 
-# 2. Run OmegaFold (PyTorch; works on RunPod, local GPU)
-python visualization/run_omegafold.py --omegafold-repo /path/to/OmegaFold
+# 2. Download all Cas13-family reference PDBs from RCSB (one-time)
+python visualization/download_cas13_references.py
 
-# 3. Compute TM-score vs Type VI CRISPR structural references
+# 3. Run OmegaFold (one subprocess per sequence, auto-resume)
+python visualization/run_omegafold.py \
+    --omegafold-repo /path/to/OmegaFold \
+    --max-residues 750          # optional: skip sequences too large for GPU
+
+# 4. Compute TM-scores vs all references
 python visualization/run_tmscore.py
 
-# 4. Generate dashboard
+# 5. Generate dashboard
 python visualization/structure_dashboard.py
 
-# 5. Serve and view
+# 6. Serve and view
 python -m http.server 8000
 # Open: http://localhost:8000/visualization/structure_dashboard.html
 ```
 
-**OmegaFold setup (Python 3.11/3.12):** OmegaFold is not on PyPI and supports Python 3.8–3.10 only. On RunPod or newer Python:
+> **OmegaFold on Python 3.11+:** Clone the repo and use a separate Python 3.10 venv.
+> The pipeline auto-detects `venv_omegafold1` in the parent directory.
+> See [docs/VPS_RUN_PLAN.md](docs/VPS_RUN_PLAN.md) for full GPU setup instructions.
 
-```bash
-git clone https://github.com/HeliXonProtein/OmegaFold.git
-cd OmegaFold && pip install torch biopython
-```
-
-Then use `--omegafold-repo /path/to/OmegaFold` or `OMEGAFOLD_REPO`. Output: `data/structure_pipeline/structures/omegafold/`.
+<br>
 
 ---
 
-## 📦 Piece 1: Enzyme Mining (The Armory)
+## Enzyme Mining -- The Armory
 
-| Module | Purpose | Logic |
-|--------|---------|-------|
-| **sra_scout** | Unannotated metagenomes (WGS) | Normalizes query, tries `wgs[Prop]` → fallback; 6-frame translate, HEPN + topology; **full_orf_checks** (N-term M, C-term tail, contig boundary); saves `undiscovered_typevi_*.fasta` |
-| **autonomous_prospector** | AI-driven continuous mining | LLM → SRAScout.search_wgs → semantic filter → DeepEngine + NeighborhoodWatch → deep_mine ORFs 600–1400 aa; **full_orf_checks**; when REQUIRE_CRISPR/REQUIRE_FULL_STRUCTURE, requires ≥MIN_REPEAT_COUNT repeat domains; saves `deep_hits_*.fasta` + metadata |
-| **full_orf_checks** | Full-enzyme ORF validation | N-term: ORF starts with M; C-term: min tail after last HEPN; contig-boundary: reject ORFs truncated within margin nt (env: REQUIRE_START_M, MIN_CTERM_TAIL, CONTIG_BOUNDARY_MARGIN) |
-| **deep_miner_utils** | Deep learning engine | **DeepEngine**: ESM-2 35M; scores vs **RfxCas13d** and **PspCas13a** when `ESM_REFERENCE_FASTA` set (closest similarity); **NeighborhoodWatch**: CRISPR array detection |
-| **family_grouper** | Group mined sequences by homology | ESM-2 clustering; SN01_001 naming; outputs `data/mined_sequences/family_grouped_*.fasta`, `fam_fasta.fasta` |
+| Module | Purpose | Details |
+|--------|---------|---------|
+| `sra_scout` | WGS metagenome search | Normalizes query; tries `wgs[Prop]` with fallback; 6-frame translate; HEPN + topology; full ORF checks |
+| `autonomous_prospector` | AI-driven continuous mining | LLM strategy -> SRA search -> semantic filter -> ESM-2 scoring -> deep mine ORFs 600-1400 aa; optional CRISPR/HMMER screening; pagination + shotgun mode |
+| `full_orf_checks` | Full-enzyme ORF validation | N-term M start; C-term tail after last HEPN; contig-boundary rejection |
+| `deep_miner_utils` | Deep learning engine | ESM-2 35M scoring vs RfxCas13d / PspCas13a references; CRISPR array detection |
+| `family_grouper` | Homology clustering | ESM-2 based clustering; SN01_001 naming scheme; family FASTA output |
+| `hmmer_miner` | HMM pre-screening (optional) | Pfam Cas13/HEPN HMMs (PF05168) before ESM-2; requires `USE_HMMER=1` |
 
----
-
-## 📦 Piece 2: Target Discovery (The Vault)
-
-| Module | Purpose | Logic |
-|--------|---------|-------|
-| **fusion_metadata** | Fusion → cancers mapping | Loads `KB_and_Pub_Recur_per_cancer.csv` + novel matrix; builds `fusion → [TCGA]`; `TCGA_TO_ORGAN` maps cancer codes to ARCHS4 keywords |
-| **specificity_filter** | High-specificity targets | Loads disease matrix; keeps fusions in ≤`max_tissue_types` (default 3); outputs `high_specificity_targets.csv` |
-| **mutation_loader** | VCF mutation mining | Parses VCF for gene-specific mutations (e.g. KRAS G12C) |
-| **archs4_loader** | Expression & safety | HDF5 human_matrix; `get_gene_expression`, `fusion_absent_in_normal_present_in_cancer`; organ-specific enrichment |
+<br>
 
 ---
 
-## 📦 Piece 3: Matchmaker
+## Target Discovery -- The Vault
 
-- Loads enzymes (FASTA or mock) and targets (`high_specificity_targets.csv` or `known_fusions.csv`)
-- Disease map from `KB_and_Pub_Recur_per_cancer.csv` or `disease_matrix_*.csv`
-- Screens enzyme × target; PFS rule (no G at 3′); outputs `lead_candidates.csv`
+| Module | Purpose | Details |
+|--------|---------|---------|
+| `fusion_metadata` | Fusion-cancer mapping | Loads recurrence tables + novel matrix; builds fusion-to-TCGA mapping; organ keyword resolution |
+| `specificity_filter` | High-specificity targets | Keeps fusions in <=3 tissue types; outputs `high_specificity_targets.csv` |
+| `mutation_loader` | VCF mutation mining | Parses VCF for gene-specific mutations (e.g. KRAS G12C) |
+| `archs4_loader` | Expression and safety | HDF5 human_matrix; organ-specific enrichment; fusion absent-in-normal / present-in-cancer |
 
----
-
-## 📦 Piece 4: Expert Agent
-
-- Loads `lead_candidates.csv`, filters by `Associated_Disease`
-- Groups by (Target_Fusion, Associated_Disease) to minimize API calls
-- ARCHS4: organ-specific enrichment or global absent-in-normal
-- Gemini AI verdict (GO / NO-GO / HOLD), screening strategy
-- Outputs `lead_candidates_filtered.csv`
+<br>
 
 ---
 
-## 🛠️ Technology Stack
+## Matchmaker
 
-| Category | Stack |
-|----------|-------|
-| **Core** | Python 3.8+, BioPython, Pandas, NumPy, h5py, JupyterLab, openpyxl, python-dotenv |
-| **Deep Learning** | PyTorch, Transformers (ESM-2), OmegaFold |
-| **AI & Data** | Google Gemini, Ollama/Llama (optional), SQLite |
-| **Data Sources** | NCBI, ARCHS4, ChimerDB, TCGA |
+Loads enzymes (FASTA) and targets (`high_specificity_targets.csv` or `known_fusions.csv`). Screens every enzyme-target pair against disease maps, applies PFS rules (no G at 3'), and outputs ranked `lead_candidates.csv`.
+
+<br>
 
 ---
 
-## 🚀 Quick Start & Workflow
+## Expert Agent
+
+Loads matchmaker output, groups by (Target_Fusion, Associated_Disease) to minimize API calls, runs ARCHS4 organ-specific enrichment, and queries Gemini AI for a structured GO / NO-GO / HOLD verdict with screening strategy. Outputs `lead_candidates_filtered.csv`.
+
+<br>
+
+---
+
+## Quick Start
 
 ### Prerequisites
 
 ```bash
 python -m venv venv
-# Windows: venv\Scripts\activate   |   macOS/Linux: source venv/bin/activate
+source venv/bin/activate        # Linux/macOS
+# venv\Scripts\activate         # Windows
+
 pip install -r requirements.txt
 ```
 
-For **Autonomous Prospector**: `pip install torch transformers requests`
+<details>
+<summary><b>Required data files</b></summary>
 
-### Data Setup
+<br>
 
 | File | Description |
 |------|-------------|
-| `data/targets/known_fusions.csv` | Validation targets |
-| `data/targets/novel_fusions.csv` | Discovery targets |
-| `data/matrices/disease_matrix_*.csv`, `KB_and_Pub_Recur_per_cancer.csv` | Fusion × cancer matrix |
-| `data/expression_data/human_matrix.h5` | ARCHS4 (download from [ARCHS4](https://maayanlab.cloud/archs4/)) |
-| `data/references/known_cas13.fasta` | Known Cas13 sequences (Lwa, Rfx, etc.) for identity/drift filter; see `data/references/known_cas13.fasta.example` |
+| `data/targets/known_fusions.csv` | Validation fusion targets |
+| `data/targets/novel_fusions.csv` | Discovery fusion targets |
+| `data/matrices/disease_matrix_*.csv` | Fusion x cancer recurrence matrix |
+| `data/matrices/KB_and_Pub_Recur_per_cancer.csv` | Knowledge-base recurrence |
+| `data/expression_data/human_matrix.h5` | ARCHS4 expression ([download](https://maayanlab.cloud/archs4/)) |
+| `data/references/known_cas13.fasta` | Known Cas13 sequences for identity/drift filter |
+| `data/references/mining_refs.fasta` | RfxCas13d + PspCas13a for ESM-2 similarity scoring |
 
-Mining outputs: `data/raw_sequences/deep_hits_*.fasta` and `*_metadata.csv`. To regenerate fusion/matrix CSVs from Excel: place `Recurrent_table.xlsx` in `data/source/`, then `python utils/split_excel.py` (writes to `data/targets/` and `data/matrices/`).
+Mining outputs land in `data/raw_sequences/deep_hits_*.fasta` and `*_metadata.csv`.
 
-### Workflow Steps
+</details>
 
-| Step | Command |
-|------|---------|
-| **1. Mine Enzymes** | Autonomous Prospector: `python modules/mining/autonomous_prospector.py` (full-enzyme + optional CRISPR repeat requirement; saves `data/raw_sequences/deep_hits_*.fasta` + `*_metadata.csv` with SRA + repeat domains) |
-| | **Exhaustive mode:** `EXHAUSTIVE_MODE=1 python modules/mining/autonomous_prospector.py` — single fixed query (bacteria/archaea WGS + metagenomic), paginate through all NCBI Nucleotide contigs, mine every one (no LLM/semantic filter). Set `FILTER_23_HEPN=1` to keep only 2–3 HEPN hits for the dashboard. Output same paths → then **filter_23_hepn** → structure pipeline → dashboard. |
-| | SRA Scout: `SRAScout().search_wgs(...)` → `fetch_and_mine` (full-enzyme ORF checks applied) |
-| | **SRA Diamond pipeline:** `python scripts/run_sra_cas13_search.py` — Bacteria/Archaea WGS or METAGENOMIC; 4-step workflow: (1) **Diamond** blastx (protein-space bait on downloaded reads), (2) **Hook** (extract hit + mate reads), (3) **Megahit** (assemble subset), (4) **Prodigal** + filter (700–1400 aa, 2 HEPN, N/C intact, CRISPR on contig). Writes `deep_hits_*.fasta` + metadata for structure pipeline. Requires on PATH: [SRA Toolkit](https://github.com/ncbi/sra-tools) (`fasterq-dump`), [Diamond](https://github.com/bbuchfink/diamond), [Megahit](https://github.com/voutcn/megahit), [Prodigal](https://github.com/hyattpd/Prodigal). |
-| **2. Family Grouping** | `python modules/mining/family_grouper.py` (ESM-2 homology, SN01_001 naming) |
-| **3. Specificity Filter** | `python modules/targeting/specificity_filter.py` |
-| **4. Matchmaker** | `python modules/matchmaker.py` |
-| **5. Expert Agent** | `python modules/analysis/expert_agent.py` (.env: GEMINI_API_KEY) |
-| **6. ARCHS4 Test** | `python run_targeting.py` |
-| **7. Structure Pipeline** | See [Structure Pipeline & Dashboard](#-structure-pipeline--dashboard) above |
+<br>
 
-### Full 4-Step Pipeline (Design → Structure → Identity → Matchmaker)
+### Workflow
 
-After mining, run the integrated pipeline on a FASTA pool (e.g. latest `deep_hits_*.fasta` or merged pool):
+```
+Step 1   Mine enzymes
+         python modules/mining/autonomous_prospector.py
 
-| Pipeline step | What it does |
-|---------------|--------------|
-| **Embed** | ESM-2 embeddings for all sequences → `data/design/embeddings/` |
-| **Mutate for drift** | Score stability vs **RfxCas13d/PspCas13a** (`--stability-refs` or `ESM_REFERENCE_FASTA`); optional **Gemini** trans-cleavage prompt (`--use-trans-cleavage-prompt`) for mutations that maintain structure but may increase trans-cleavage; keep variants &lt;85% identity → `data/design/drift_variants.fasta` |
-| **Structure filter** | OmegaFold → TM-score + HEPN check → `data/structure_pipeline/passed_structures.fasta` |
-| **Identity filter** | Keep only &lt;85% identity to `data/references/known_cas13.fasta` → `data/identity_filtered/passed.fasta` |
-| **Matchmaker** (optional) | Enzyme × fusion targets → `lead_candidates.csv` |
+Step 2   Family grouping
+         python modules/mining/family_grouper.py
+
+Step 3   Specificity filter
+         python modules/targeting/specificity_filter.py
+
+Step 4   Matchmaker
+         python modules/matchmaker.py
+
+Step 5   Expert agent
+         python modules/analysis/expert_agent.py
+
+Step 6   Structure pipeline
+         See "Structure Pipeline & Dashboard" above
+```
+
+<br>
+
+### Full Pipeline (single command)
+
+After mining, run the integrated pipeline on any FASTA pool:
 
 ```bash
 # With GPU (OmegaFold on this machine)
-python run_full_pipeline.py --input data/raw_sequences/deep_hits_latest.fasta --run-matchmaker
+python run_full_pipeline.py \
+    --input data/raw_sequences/deep_hits_latest.fasta \
+    --run-matchmaker
 
-# No GPU: skip structure filter
+# Without GPU (skip structure filter)
 python run_full_pipeline.py --skip-structure --run-matchmaker
 
-# Use latest deep_hits automatically
+# Auto-detect latest deep_hits
 python run_full_pipeline.py --run-matchmaker
 ```
 
-**Full enzyme & CRISPR repeats (mining):** Set `REQUIRE_START_M=1`, `MIN_CTERM_TAIL=15`, `REQUIRE_FULL_STRUCTURE=1`, `MIN_REPEAT_COUNT=1` in `.env` to keep only full-enzyme ORFs and loci with at least one CRISPR repeat saved. See [Configuration](#%EF%B8%8F-configuration) and **[docs/VPS_RUN_PLAN.md](docs/VPS_RUN_PLAN.md)**.
+<details>
+<summary><b>Pipeline steps breakdown</b></summary>
+
+<br>
+
+| Step | What it does | Output |
+|------|-------------|--------|
+| **Embed** | ESM-2 embeddings for all sequences | `data/design/embeddings/` |
+| **Mutate** | Score stability vs RfxCas13d/PspCas13a; optional Gemini trans-cleavage prompt; keep variants <85% identity | `data/design/drift_variants.fasta` |
+| **Structure** | OmegaFold -> TM-score + HEPN check | `data/structure_pipeline/passed_structures.fasta` |
+| **Identity** | Keep only <85% identity to known Cas13 | `data/identity_filtered/passed.fasta` |
+| **Match** | Enzyme x fusion targets | `lead_candidates.csv` |
+
+</details>
+
+<details>
+<summary><b>Exhaustive mining mode</b></summary>
+
+<br>
+
+Single fixed query (bacteria/archaea WGS + metagenomic), paginate through all NCBI Nucleotide contigs, mine every one without LLM/semantic filter:
+
+```bash
+EXHAUSTIVE_MODE=1 FILTER_23_HEPN=1 python modules/mining/autonomous_prospector.py
+```
+
+Output flows into the same `deep_hits_*.fasta` path, then filter_23_hepn -> structure pipeline -> dashboard.
+
+</details>
+
+<details>
+<summary><b>SRA Diamond pipeline (assembly-based)</b></summary>
+
+<br>
+
+4-step workflow: Diamond blastx (protein-space bait) -> Hook (extract hit + mate reads) -> Megahit (assemble) -> Prodigal + filter (700-1400 aa, 2 HEPN, intact N/C, CRISPR).
+
+```bash
+python scripts/run_sra_cas13_search.py
+```
+
+Requires on PATH: `fasterq-dump`, `diamond`, `megahit`, `prodigal`.
+
+</details>
+
+<br>
 
 ---
 
-## 📂 Project Structure
+## Project Structure
 
 ```
 collateral_bio_core/
-├── README.md
-├── FILTERING_MAP.md
+│
+├── run_full_pipeline.py              # Orchestration: embed -> mutate -> structure -> identity -> match
 ├── requirements.txt
-├── main.py
-├── run_targeting.py
-├── assets/
-│   └── structure-dashboard-screenshot.png
-├── data/
-│   ├── raw_sequences/         # deep_hits_*.fasta, deep_hits_*_metadata.csv (SRA + repeat domains)
-│   ├── mined_sequences/       # family_grouped_*.fasta
-│   ├── design/                # embeddings/, drift_variants.fasta
-│   ├── structure_pipeline/    # passed_structures.fasta, structures/omegafold/, references/
-│   ├── identity_filtered/     # passed.fasta, identity_metadata.csv
-│   ├── expression_data/       # human_matrix.h5
-│   ├── source/                # Recurrent_table.xlsx (input for split_excel)
-│   ├── targets/               # known_fusions.csv, novel_fusions.csv, high_specificity_targets.csv
-│   ├── matrices/              # disease_matrix_*.csv, KB_and_Pub_Recur_per_cancer.csv
-│   └── references/            # known_cas13.fasta, mining_refs.fasta
+├── .env                              # Runtime configuration (from pipeline.env.example)
+│
 ├── modules/
-│   ├── mining/                # sra_scout, autonomous_prospector, full_orf_checks, deep_miner_utils, family_grouper
-│   ├── design/                # embed_pool, interpolate, mutate_for_drift (ESM-2 latent + drift)
-│   ├── structure_filter/      # predict_structures, bi_lobed_hepn_check, run_filter
-│   ├── identity_filter.py     # drift goal: max identity < 85%
-│   ├── targeting/             # archs4_loader, fusion_metadata, specificity_filter
-│   ├── analysis/              # expert_agent
-│   ├── discovery/             # fusion_caller
-│   └── matchmaker.py
-├── run_full_pipeline.py       # orchestration: embed → mutate → structure → identity [→ matchmaker]
-├── config/
-│   └── pipeline.env.example   # env vars for pipeline / VPS
-├── docs/
-│   └── VPS_RUN_PLAN.md        # how to run the full pipeline on a VPS
+│   ├── mining/
+│   │   ├── autonomous_prospector.py  # AI-driven continuous NCBI mining
+│   │   ├── sra_scout.py             # SRA/WGS search and ORF extraction
+│   │   ├── deep_miner_utils.py      # ESM-2 scoring engine + CRISPR detection
+│   │   ├── full_orf_checks.py       # Full-enzyme ORF validation
+│   │   ├── family_grouper.py        # ESM-2 homology clustering
+│   │   └── hmmer_miner.py           # Optional HMM pre-screening
+│   │
+│   ├── design/
+│   │   ├── embed_pool.py            # ESM-2 embedding
+│   │   ├── interpolate.py           # Latent space interpolation
+│   │   └── mutate_for_drift.py      # Stability-aware drift mutations
+│   │
+│   ├── structure_filter/
+│   │   ├── predict_structures.py    # OmegaFold runner (1 subprocess per sequence)
+│   │   ├── bi_lobed_hepn_check.py   # TM-score + HEPN structural validation
+│   │   ├── functional_criteria.py   # Catalytic distance, linker, pLDDT checks
+│   │   └── run_filter.py            # Orchestrates predict -> filter -> output
+│   │
+│   ├── targeting/
+│   │   ├── archs4_loader.py         # ARCHS4 expression data
+│   │   ├── fusion_metadata.py       # Fusion-cancer mapping
+│   │   └── specificity_filter.py    # Tissue-type specificity
+│   │
+│   ├── analysis/
+│   │   └── expert_agent.py          # Gemini AI verdict engine
+│   │
+│   ├── matchmaker.py                # Enzyme x target pairing
+│   └── identity_filter.py           # Drift goal: max identity < 85%
+│
 ├── visualization/
-│   ├── filter_23_hepn.py
-│   ├── run_omegafold.py
-│   ├── run_tmscore.py
-│   ├── structure_dashboard.py
-│   ├── structure_dashboard.html
-│   └── family_dashboard.py
-├── utils/                     # split_excel, inspect_archs4_metadata
-├── prompts/
-├── lead_candidates.csv
-└── lead_candidates_filtered.csv
+│   ├── download_cas13_references.py  # Fetch all Cas13 PDBs from RCSB
+│   ├── filter_23_hepn.py            # 2-3 HEPN motif filter
+│   ├── run_omegafold.py             # OmegaFold runner (standalone)
+│   ├── run_tmscore.py               # TM-score computation (US-align / tmtools)
+│   ├── structure_dashboard.py       # Interactive HTML dashboard generator
+│   └── family_dashboard.py          # Family-level visualization
+│
+├── config/
+│   └── pipeline.env.example          # Template for .env configuration
+│
+├── data/
+│   ├── raw_sequences/                # deep_hits_*.fasta + metadata
+│   ├── mined_sequences/              # family_grouped_*.fasta
+│   ├── design/                       # embeddings/, drift_variants.fasta
+│   ├── structure_pipeline/           # structures/omegafold/, references/, passed_structures.fasta
+│   ├── identity_filtered/            # passed.fasta, identity_metadata.csv
+│   ├── expression_data/              # human_matrix.h5
+│   ├── targets/                      # known_fusions.csv, high_specificity_targets.csv
+│   ├── matrices/                     # disease_matrix_*.csv
+│   └── references/                   # known_cas13.fasta, mining_refs.fasta
+│
+├── docs/
+│   └── VPS_RUN_PLAN.md              # Full VPS/RunPod deployment guide
+│
+├── scripts/                          # Utility scripts (SRA Diamond, HMM fetch, etc.)
+└── utils/                            # split_excel, inspect_archs4_metadata
 ```
+
+<br>
 
 ---
 
-## ⚙️ Configuration
+## Configuration
 
-| Variable | Purpose |
-|----------|---------|
-| `GEMINI_API_KEY` | Expert agent AI |
-| `TARGET_FUSIONS_CSV` | `novel_fusions.csv` for novel run |
-| `NORMAL_MAX_TPM`, `CANCER_MIN_TPM` | ARCHS4 filter thresholds |
-| `ENRICHMENT_FACTOR`, `USE_ORGAN_SPECIFIC` | Organ-specific ARCHS4 |
-| `LLM_PROVIDER`, `LLM_LOCAL_URL`, `LLM_MODEL` | Prospector LLM (e.g. Ollama) |
-| `ESM_SIMILARITY_FLOOR`, `ESM_SIMILARITY_CEILING` | Diversity mode: keep hits in [floor, ceiling] (e.g. 0.5–0.82) |
-| `REQUIRE_START_M`, `MIN_CTERM_TAIL`, `CONTIG_BOUNDARY_MARGIN` | Full-enzyme ORF checks: N-term M, C-term tail after HEPN, contig-boundary margin (nt) |
-| `REQUIRE_FULL_STRUCTURE`, `MIN_REPEAT_COUNT` | When 1: require CRISPR array + at least MIN_REPEAT_COUNT repeat domains saved (full locus) |
-| `ESM_REFERENCE_FASTA` | FASTA with **RfxCas13d** and **PspCas13a** (or other refs) for mining and design; mining keeps **closest** similarity (leave `ESM_SIMILARITY_CEILING` unset) |
-| `GEMINI_API_KEY` | Optional: for trans-cleavage mutation suggestions in `mutate_for_drift --use-trans-cleavage-prompt` |
-| `OMEGAFOLD_REPO` | Path to cloned OmegaFold repo (Python 3.11/3.12) |
+Copy `config/pipeline.env.example` to `.env` and configure:
+
+<br>
+
+<details>
+<summary><b>Mining configuration</b></summary>
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `ESM_THRESHOLD` | Minimum ESM-2 score to keep a hit | `0.75` |
+| `ESM_SIMILARITY_CEILING` | Diversity mode: cap similarity | `0.85` |
+| `ESM_REFERENCE_FASTA` | RfxCas13d + PspCas13a FASTA for closest-similarity mining | -- |
+| `REQUIRE_CRISPR` | Require CRISPR array in contig | `1` |
+| `CRISPR_FLANK_BP` | Max distance (bp) between ORF and CRISPR array | `10000` |
+| `REQUIRE_START_M` | ORF must start with Met | `1` |
+| `MIN_CTERM_TAIL` | Min residues after last HEPN motif | `15` |
+| `CONTIG_BOUNDARY_MARGIN` | Reject ORFs within this many nt of contig end | `30` |
+| `REQUIRE_FULL_STRUCTURE` | With CRISPR, also require repeat domains | `0` |
+| `MIN_REPEAT_COUNT` | Min CRISPR repeat sequences per hit | `1` |
+| `USE_HMMER` | Enable HMM pre-screening (requires `data/hmm/`) | `0` |
+| `EXHAUSTIVE_MODE` | Single-query paginated mining (no LLM) | `0` |
+| `PROSPECTOR_WORKERS` | Parallel mining workers | `1` |
+
+</details>
+
+<details>
+<summary><b>Structure and design configuration</b></summary>
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `OMEGAFOLD_REPO` | Path to cloned OmegaFold repository | -- |
+| `FAMILY_DEVICE` | PyTorch device (`cuda` or `cpu`) | `cuda` |
+| `EMBED_BATCH_SIZE` | Sequences per ESM-2 batch | `50` |
+| `GEMINI_API_KEY` | For trans-cleavage mutation suggestions | -- |
+| `USE_TRANS_CLEAVAGE_PROMPT` | Enable Gemini mutation suggestions | `0` |
+
+</details>
+
+<details>
+<summary><b>LLM and API configuration</b></summary>
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `LLM_PROVIDER` | Prospector LLM backend | `local` |
+| `LLM_LOCAL_URL` | Ollama API endpoint | `http://localhost:11434/api/chat` |
+| `LLM_MODEL` | Model name for strategy generation | `llama3-bio` |
+| `GEMINI_API_KEY` | Google Gemini for expert agent | -- |
+
+</details>
+
+<br>
 
 ### Troubleshooting
 
-- **"Enzyme file not found"** – Matchmaker falls back to mock enzymes.
-- **"ARCHS4 file not found"** – Download `human_matrix.h5` into `data/expression_data/`.
-- **Prospector import error** – Install `torch`, `transformers`, `requests`.
-- **OmegaFold Python 3.12** – Use clone + `--omegafold-repo`.
-- **No hits from mining** – Check `REQUIRE_START_M`, `MIN_CTERM_TAIL`; relax or set `REQUIRE_CRISPR=0` / `REQUIRE_FULL_STRUCTURE=0` to test.
-- **Identity filter keeps all** – Add sequences to `data/references/known_cas13.fasta`; otherwise max identity is 0 and all pass.
+| Issue | Solution |
+|-------|----------|
+| "Enzyme file not found" | Matchmaker falls back to mock enzymes. Run mining first. |
+| "ARCHS4 file not found" | Download `human_matrix.h5` into `data/expression_data/` |
+| Prospector import error | `pip install torch transformers requests` |
+| OmegaFold on Python 3.12 | Clone repo + use `--omegafold-repo` or `OMEGAFOLD_REPO` |
+| No hits from mining | Relax filters: `REQUIRE_CRISPR=0` or lower `ESM_THRESHOLD` |
+| Identity filter keeps all | Add sequences to `data/references/known_cas13.fasta` |
+| OmegaFold CUDA OOM | Use `--max-residues 750` or upgrade GPU; pipeline auto-resumes |
+| TM-scores all null | Install US-align or verify tmtools is installed correctly |
+
+<br>
 
 ---
 
-## 📄 License
+<div align="center">
 
-Proprietary – Collateral Bio © 2026
-
----
+**Collateral Bio** -- Proprietary, 2026
 
 *Built with precision for precision medicine.*
+
+</div>
